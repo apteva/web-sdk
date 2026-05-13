@@ -1,6 +1,6 @@
-import { ApteveError } from "./errors.js";
+import { AptevaError } from "./errors.js";
 import type {
-  ApteveClientOptions,
+  AptevaClientOptions,
   AuthStatus,
   MCPCallResponse,
   User,
@@ -8,14 +8,14 @@ import type {
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 
-export class ApteveClient {
+export class AptevaClient {
   private readonly baseURL: string;
   private apiKey?: string;
   private readonly fetchImpl: typeof fetch;
   private readonly onUnauthorized?: () => void;
   private readonly timeoutMs: number;
 
-  constructor(opts: ApteveClientOptions) {
+  constructor(opts: AptevaClientOptions) {
     this.baseURL = opts.baseURL.replace(/\/+$/, "");
     this.apiKey = opts.apiKey;
     this.fetchImpl = opts.fetch ?? globalThis.fetch.bind(globalThis);
@@ -183,20 +183,20 @@ export class ApteveClient {
     } catch (err) {
       if (timer) clearTimeout(timer);
       if (err instanceof Error && err.name === "AbortError") {
-        throw new ApteveError(0, `request timeout after ${this.timeoutMs}ms`);
+        throw new AptevaError(0, `request timeout after ${this.timeoutMs}ms`);
       }
-      throw new ApteveError(0, err instanceof Error ? err.message : String(err));
+      throw new AptevaError(0, err instanceof Error ? err.message : String(err));
     }
     if (timer) clearTimeout(timer);
 
     if (res.status === 401) {
       this.onUnauthorized?.();
       const text = await readBody(res);
-      throw new ApteveError(401, text || "unauthorized");
+      throw new AptevaError(401, text || "unauthorized");
     }
     if (!res.ok) {
       const text = await readBody(res);
-      throw new ApteveError(res.status, text || res.statusText);
+      throw new AptevaError(res.status, text || res.statusText);
     }
 
     const ct = res.headers.get("Content-Type") ?? "";
@@ -218,13 +218,13 @@ async function readBody(res: Response): Promise<string> {
 
 // Strip the MCP JSON-RPC envelope so callers see the tool's natural
 // return shape. Mirrors app-sdk/caller.go::CallAppResult. Three cases:
-//   1. envelope.error  → throw ApteveError(-1, message, code)
+//   1. envelope.error  → throw AptevaError(-1, message, code)
 //   2. envelope.result.content[0].text  → JSON.parse(text), return it
 //   3. envelope has neither (the platform already short-circuited an
 //      unwrapped response) → cast and return
 export function unwrapMCP<R>(env: MCPCallResponse<unknown>): R {
   if (env && env.error) {
-    throw new ApteveError(-1, env.error.message, env.error.code);
+    throw new AptevaError(-1, env.error.message, env.error.code);
   }
   const text = env?.result?.content?.[0]?.text;
   if (typeof text !== "string") {
@@ -233,7 +233,7 @@ export function unwrapMCP<R>(env: MCPCallResponse<unknown>): R {
   try {
     return JSON.parse(text) as R;
   } catch (err) {
-    throw new ApteveError(
+    throw new AptevaError(
       -1,
       `MCP response was not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
     );

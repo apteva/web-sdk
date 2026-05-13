@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Inbox, RefreshCw } from "lucide-react";
-import { ApteveError } from "@apteva/web-sdk";
+import { AptevaError } from "@apteva/web-sdk";
 import { apteva, LEADS_TABLE, TABLES_APP } from "../lib/apteva";
 import type { Lead, RowsSearchResult } from "../lib/types";
 import { relativeTime } from "../lib/format";
@@ -148,7 +148,7 @@ function initials(name: string): string {
 }
 
 function explainError(err: unknown): string {
-  if (err instanceof ApteveError) {
+  if (err instanceof AptevaError) {
     if (err.status === 404) {
       return `The "${TABLES_APP}" app isn't installed on this server.`;
     }

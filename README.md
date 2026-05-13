@@ -18,9 +18,9 @@ npm install @apteva/web-sdk
 ## Quick start
 
 ```ts
-import { ApteveClient } from "@apteva/web-sdk";
+import { AptevaClient } from "@apteva/web-sdk";
 
-const apteva = new ApteveClient({
+const apteva = new AptevaClient({
   baseURL: "https://agents.example.com",
   // Optional. Omit to rely on the session cookie (after auth.login).
   apiKey: process.env.NEXT_PUBLIC_APTEVA_KEY,
@@ -47,7 +47,7 @@ The SDK sends `credentials: "include"` on every request, so a session cookie set
 You can layer on an API key by setting `apiKey` in the constructor or calling `client.setApiKey(...)` at runtime. Bearer-wins-over-cookie on the wire.
 
 ```ts
-const apteva = new ApteveClient({
+const apteva = new AptevaClient({
   baseURL: "...",
   apiKey: "sk-...",     // optional
   onUnauthorized: () => router.push("/login"),  // fires once per 401
@@ -75,19 +75,19 @@ const result = await apteva.app("tables").tool<{ rows: Row[]; total: number }>(
 );
 ```
 
-If the MCP call returns a JSON-RPC error, the SDK throws `ApteveError(-1, message, code)` — same `catch` block as HTTP errors.
+If the MCP call returns a JSON-RPC error, the SDK throws `AptevaError(-1, message, code)` — same `catch` block as HTTP errors.
 
 For lower-level usage, `client.callTool(appName, toolName, args)` and the standalone `unwrapMCP(envelope)` are both exported.
 
 ## Error handling
 
-Every non-2xx response and every MCP error throws an `ApteveError`:
+Every non-2xx response and every MCP error throws an `AptevaError`:
 
 ```ts
 try {
   await apteva.app("crm").tool("contacts_get", { id: 999 });
 } catch (err) {
-  if (err instanceof ApteveError) {
+  if (err instanceof AptevaError) {
     if (err.isUnauthorized()) ...      // 401
     if (err.isNotFound()) ...          // 404
     if (err.status === -1) ...         // MCP-level error
@@ -96,16 +96,16 @@ try {
 }
 ```
 
-Network failures (no DNS, refused connection) surface as `ApteveError(0, "...")`. Timeouts surface as `ApteveError(0, "request timeout after Xms")`.
+Network failures (no DNS, refused connection) surface as `AptevaError(0, "...")`. Timeouts surface as `AptevaError(0, "request timeout after Xms")`.
 
 ## Hosted on apteva-server itself
 
 If your UI is installed as a `runtime.kind: static` app, apteva-server injects a config block. The SDK picks it up:
 
 ```ts
-import { ApteveClient, pickBaseURL, pickKioskKey } from "@apteva/web-sdk";
+import { AptevaClient, pickBaseURL, pickKioskKey } from "@apteva/web-sdk";
 
-const apteva = new ApteveClient({
+const apteva = new AptevaClient({
   baseURL: pickBaseURL(),     // window.__APTEVA_APP__.api_base
   apiKey:  pickKioskKey(),    // ?api_key=... > install config > undefined
 });

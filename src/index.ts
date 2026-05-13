@@ -1,13 +1,13 @@
-export { ApteveClient, unwrapMCP } from "./client.js";
+export { AptevaClient, unwrapMCP } from "./client.js";
 export type { AppHandle } from "./client.js";
-export { ApteveError } from "./errors.js";
+export { AptevaError } from "./errors.js";
 export {
   readAptevaInjection,
   pickKioskKey,
   pickBaseURL,
 } from "./window.js";
 export type {
-  ApteveClientOptions,
+  AptevaClientOptions,
   AuthCarrier,
   AuthBranding,
   AuthStatus,

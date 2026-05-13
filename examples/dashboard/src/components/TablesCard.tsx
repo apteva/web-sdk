@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Database, RefreshCw, Table as TableIcon } from "lucide-react";
-import { ApteveError } from "@apteva/web-sdk";
+import { AptevaError } from "@apteva/web-sdk";
 import { apteva, TABLES_APP } from "../lib/apteva";
 import type { RowsSearchResult, TableSummary, TablesListResult } from "../lib/types";
 import { formatDateTime } from "../lib/format";
@@ -24,7 +24,7 @@ export function TablesCard() {
       if (!selected && r.tables?.length) setSelected(r.tables[0]!.name);
     } catch (err) {
       const msg =
-        err instanceof ApteveError
+        err instanceof AptevaError
           ? err.status === 404
             ? `The "${TABLES_APP}" app isn't installed on this server.`
             : err.body || `error ${err.status}`
@@ -57,7 +57,7 @@ export function TablesCard() {
       .catch((err) => {
         if (cancelled) return;
         const msg =
-          err instanceof ApteveError ? err.body || `error ${err.status}` : "failed to load rows";
+          err instanceof AptevaError ? err.body || `error ${err.status}` : "failed to load rows";
         setError(msg);
         setRows([]);
       })

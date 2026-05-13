@@ -1,4 +1,4 @@
-import { ApteveClient, pickBaseURL, pickKioskKey } from "@apteva/web-sdk";
+import { AptevaClient, pickBaseURL, pickKioskKey } from "@apteva/web-sdk";
 
 declare const __API_BASE__: string;
 declare const __TABLES_APP__: string;
@@ -15,7 +15,7 @@ declare const __LEADS_TABLE__: string;
 export const TABLES_APP = __TABLES_APP__ || "tables";
 export const LEADS_TABLE = __LEADS_TABLE__ || "leads";
 
-export const apteva = new ApteveClient({
+export const apteva = new AptevaClient({
   baseURL: pickBaseURL(__API_BASE__),
   apiKey: pickKioskKey(),
   onUnauthorized: () => {

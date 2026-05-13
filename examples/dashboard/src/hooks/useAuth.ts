@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { User } from "@apteva/web-sdk";
-import { ApteveError } from "@apteva/web-sdk";
+import { AptevaError } from "@apteva/web-sdk";
 import { apteva } from "../lib/apteva";
 
 export interface AuthState {
@@ -40,7 +40,7 @@ export function useAuth() {
       setState({ user: u, loading: false, error: null });
     } catch (err) {
       const message =
-        err instanceof ApteveError
+        err instanceof AptevaError
           ? err.body || `error ${err.status}`
           : err instanceof Error
             ? err.message

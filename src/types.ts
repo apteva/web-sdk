@@ -47,7 +47,7 @@ declare global {
 // can coexist — Bearer wins on the wire when set.
 export type AuthCarrier = "cookie" | "apiKey";
 
-export interface ApteveClientOptions {
+export interface AptevaClientOptions {
   // Base URL of the apteva-server. "/api" is appended by the client
   // automatically; pass "https://agents.example.com", not
   // "https://agents.example.com/api".
@@ -58,7 +58,7 @@ export interface ApteveClientOptions {
   // Custom fetch implementation (test injection, edge runtimes).
   fetch?: typeof fetch;
   // Called once whenever a request returns 401. The client throws an
-  // ApteveError(401) regardless — this is just a notification hook
+  // AptevaError(401) regardless — this is just a notification hook
   // for re-rendering "please log in" UIs.
   onUnauthorized?: () => void;
   // Default request timeout in ms. 0 = no timeout. Defaults to 30_000.
