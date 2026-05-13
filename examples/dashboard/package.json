@@ -1,0 +1,28 @@
+{
+  "name": "@apteva/web-sdk-example-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "module": "src/main.tsx",
+  "description": "End-to-end @apteva/web-sdk example: login against an apteva-server, read a leads-shaped table from the Tables app, browse arbitrary tables. Framework-agnostic SDK + React 19 + Tailwind v4.",
+  "scripts": {
+    "build": "bun run build.ts",
+    "serve": "bun run serve.ts",
+    "dev": "bun run --watch build.ts --serve",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@apteva/web-sdk": "file:../..",
+    "lucide-react": "^0.400.0",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "^4.2.2",
+    "@types/bun": "latest",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "tailwindcss": "^4.2.2",
+    "typescript": "^5.4.0"
+  }
+}

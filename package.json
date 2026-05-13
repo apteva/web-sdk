@@ -1,0 +1,57 @@
+{
+  "name": "@apteva/web-sdk",
+  "version": "0.1.0",
+  "description": "Browser SDK for apteva-server. Handles auth (session cookie + API key + ?api_key=), wraps the /api/apps/<name>/* HTTP and MCP proxy, normalizes the MCP JSON-RPC envelope, and surfaces window.__APTEVA_APP__ when the UI is hosted on apteva-server itself. Framework-agnostic.",
+  "license": "MIT",
+  "author": "Apteva",
+  "homepage": "https://github.com/apteva/web-sdk",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/apteva/web-sdk"
+  },
+  "bugs": {
+    "url": "https://github.com/apteva/web-sdk/issues"
+  },
+  "keywords": [
+    "apteva",
+    "sdk",
+    "mcp",
+    "agents",
+    "auth",
+    "browser"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "bun run typecheck && bun test && bun run build"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.1.0",
+    "typescript": "^5.4.0"
+  }
+}
