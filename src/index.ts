@@ -18,6 +18,8 @@ export type {
   // agents
   Agent,
   AgentStatus,
+  AgentRestartResult,
+  AgentPauseResult,
   Thread,
   ChannelInfo,
   ChatHistoryMessage,

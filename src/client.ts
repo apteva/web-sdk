@@ -1,6 +1,8 @@
 import { AptevaError } from "./errors.js";
 import type {
   Agent,
+  AgentPauseResult,
+  AgentRestartResult,
   AgentStatus,
   AptevaClientOptions,
   AuthStatus,
@@ -99,6 +101,26 @@ export class AptevaClient {
       this.get<ChatHistoryMessage[]>(
         `/api/agents/${id}/chat-history?limit=${encodeURIComponent(String(limit))}`,
       ),
+
+    // --- lifecycle ---
+
+    // Spawn the agent's apteva-core process. Returns the updated Agent
+    // (status flips to "running").
+    start: (id: number) => this.post<Agent>(`/api/agents/${id}/start`, {}),
+
+    // Terminate the agent's process. Returns the updated Agent.
+    stop: (id: number) => this.post<Agent>(`/api/agents/${id}/stop`, {}),
+
+    // Stop + start in one call.
+    restart: (id: number) =>
+      this.post<AgentRestartResult>(`/api/agents/${id}/restart`, {}),
+
+    // Toggle the agent's paused state — pausing halts the thinking loop
+    // without killing the process. This is a *toggle*: there's no
+    // separate resume endpoint. The result reports the state after the
+    // flip, so check `.paused` rather than assuming.
+    togglePause: (id: number) =>
+      this.post<AgentPauseResult>(`/api/agents/${id}/pause`, {}),
   };
 
   // Activity / telemetry surface. query/timeline/stats are plain reads;

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.0 — 2026-05-14
+
+Adds agent **lifecycle** control to `client.agents`.
+
+- `client.agents.start(id)` / `stop(id)` — spawn/terminate the agent's apteva-core process; both return the updated `Agent`.
+- `client.agents.restart(id)` — `{ status }`.
+- `client.agents.togglePause(id)` — `{ paused }`. It's a toggle (the server has no separate resume), so check the returned state.
+- New types: `AgentRestartResult`, `AgentPauseResult`.
+- Example dashboard's `ChatCard` gains a Start/Stop button + live status dot, so you can bring an agent up and watch the reply stream.
+- 5 new tests (77 total).
+
+
 ## 0.4.0 — 2026-05-14
 
 Adds the **chat** surface — `client.chat` wraps the built-in `channel-chat` app.

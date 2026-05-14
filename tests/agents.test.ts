@@ -99,3 +99,52 @@ describe("agents namespace", () => {
     expect(stub.last()?.headers["authorization"]).toBe("Bearer sk-a");
   });
 });
+
+describe("agents namespace — lifecycle", () => {
+  test("start POSTs /api/agents/:id/start and returns the Agent", async () => {
+    stub.setRoute("POST", "/api/agents/3/start", () =>
+      json({ ...AGENT, status: "running" }),
+    );
+    const c = new AptevaClient({ baseURL: stub.url });
+    const a = await c.agents.start(3);
+    expect(stub.last()?.method).toBe("POST");
+    expect(stub.last()?.path).toBe("/api/agents/3/start");
+    expect(a.status).toBe("running");
+  });
+
+  test("stop POSTs /api/agents/:id/stop and returns the Agent", async () => {
+    stub.setRoute("POST", "/api/agents/3/stop", () =>
+      json({ ...AGENT, status: "stopped" }),
+    );
+    const c = new AptevaClient({ baseURL: stub.url });
+    const a = await c.agents.stop(3);
+    expect(stub.last()?.path).toBe("/api/agents/3/stop");
+    expect(a.status).toBe("stopped");
+  });
+
+  test("restart POSTs /api/agents/:id/restart and returns {status}", async () => {
+    stub.setRoute("POST", "/api/agents/3/restart", () =>
+      json({ status: "restarted" }),
+    );
+    const c = new AptevaClient({ baseURL: stub.url });
+    const r = await c.agents.restart(3);
+    expect(stub.last()?.path).toBe("/api/agents/3/restart");
+    expect(r.status).toBe("restarted");
+  });
+
+  test("togglePause POSTs /api/agents/:id/pause and returns {paused}", async () => {
+    stub.setRoute("POST", "/api/agents/3/pause", () => json({ paused: true }));
+    const c = new AptevaClient({ baseURL: stub.url });
+    const r = await c.agents.togglePause(3);
+    expect(stub.last()?.method).toBe("POST");
+    expect(stub.last()?.path).toBe("/api/agents/3/pause");
+    expect(r.paused).toBe(true);
+  });
+
+  test("lifecycle calls carry the apiKey", async () => {
+    stub.setRoute("POST", "/api/agents/3/start", () => json(AGENT));
+    const c = new AptevaClient({ baseURL: stub.url, apiKey: "sk-life" });
+    await c.agents.start(3);
+    expect(stub.last()?.headers["authorization"]).toBe("Bearer sk-life");
+  });
+});

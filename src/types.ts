@@ -107,6 +107,17 @@ export interface Agent {
   created_at: string;
 }
 
+// POST /api/agents/:id/restart response.
+export interface AgentRestartResult {
+  status: string;
+}
+
+// POST /api/agents/:id/pause response. The endpoint is a toggle —
+// `paused` is the resulting state after the flip.
+export interface AgentPauseResult {
+  paused: boolean;
+}
+
 // Live runtime snapshot for one agent — GET /api/agents/:id/status.
 export interface AgentStatus {
   iteration: number;

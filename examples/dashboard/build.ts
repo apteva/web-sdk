@@ -8,14 +8,16 @@ mkdirSync("./dist", { recursive: true });
 //   API_BASE     — base URL of apteva-server (default: same-origin)
 //   TABLES_APP   — tables sidecar slug (default: "tables")
 //   LEADS_TABLE  — name of the table holding lead rows (default: "leads")
+//   AGENT_ID     — agent the chat panel targets (default: first agent)
 const API_BASE = process.env.API_BASE || "";
 const TABLES_APP = process.env.TABLES_APP || "tables";
 const LEADS_TABLE = process.env.LEADS_TABLE || "leads";
+const AGENT_ID = process.env.AGENT_ID || "";
 
 console.log("Building CSS...");
 await $`bunx @tailwindcss/cli -i ./src/index.css -o ./dist/style.css --minify`.quiet();
 
-console.log(`Building JS... (API_BASE=${API_BASE || "<same-origin>"}, TABLES=${TABLES_APP}, LEADS_TABLE=${LEADS_TABLE})`);
+console.log(`Building JS... (API_BASE=${API_BASE || "<same-origin>"}, TABLES=${TABLES_APP}, LEADS_TABLE=${LEADS_TABLE}, AGENT_ID=${AGENT_ID || "<first>"})`);
 
 const result = await Bun.build({
   entrypoints: ["./src/main.tsx"],
@@ -27,6 +29,7 @@ const result = await Bun.build({
     __API_BASE__: JSON.stringify(API_BASE),
     __TABLES_APP__: JSON.stringify(TABLES_APP),
     __LEADS_TABLE__: JSON.stringify(LEADS_TABLE),
+    __AGENT_ID__: JSON.stringify(AGENT_ID),
   },
   naming: {
     entry: "[name]-[hash].[ext]",

@@ -1,8 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { MessageSquare, Send } from "lucide-react";
+import { MessageSquare, Play, Send, Square } from "lucide-react";
 import { AptevaError } from "@apteva/web-sdk";
-import type { Chat, ChatMessage, StreamFrame, StreamHandle } from "@apteva/web-sdk";
+import type { Agent, Chat, ChatMessage, StreamFrame, StreamHandle } from "@apteva/web-sdk";
 import { apteva } from "../lib/apteva";
+
+// Optionally pin the chat to a specific agent via the AGENT_ID build
+// env. Empty → fall back to the first agent the server returns.
+declare const __AGENT_ID__: string;
+const TARGET_AGENT_ID = __AGENT_ID__ ? Number(__AGENT_ID__) : null;
 
 // Reference chat UI built entirely on @apteva/web-sdk's chat namespace.
 // Demonstrates the full loop: pick an agent → create/get its chat →
@@ -24,13 +29,14 @@ interface DisplayMessage {
 
 export function ChatCard() {
   const [chat, setChat] = useState<Chat | null>(null);
-  const [agentName, setAgentName] = useState<string>("");
+  const [agent, setAgent] = useState<Agent | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [streamBuffers, setStreamBuffers] = useState<Record<string, string>>({});
   const [input, setInput] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
+  const [lifecycleBusy, setLifecycleBusy] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const subRef = useRef<StreamHandle | null>(null);
 
@@ -45,11 +51,19 @@ export function ChatCard() {
           setLoading(false);
           return;
         }
-        const agent = agents[0]!;
+        const agent =
+          TARGET_AGENT_ID !== null
+            ? agents.find((a) => a.id === TARGET_AGENT_ID)
+            : agents[0];
+        if (!agent) {
+          setError(`Agent #${TARGET_AGENT_ID} not found on this server.`);
+          setLoading(false);
+          return;
+        }
         const c = await apteva.chat.create(agent.id);
         const history = await apteva.chat.messages(c.id, { limit: 200 });
         if (cancelled) return;
-        setAgentName(agent.name);
+        setAgent(agent);
         setChat(c);
         setMessages(history);
         setLoading(false);
@@ -143,16 +157,65 @@ export function ChatCard() {
     }
   };
 
+  // Start or stop the agent process. start/stop both return the
+  // updated Agent, so we just swap it into state.
+  const toggleAgent = async () => {
+    if (!agent || lifecycleBusy) return;
+    setLifecycleBusy(true);
+    setError(null);
+    try {
+      const updated =
+        agent.status === "running"
+          ? await apteva.agents.stop(agent.id)
+          : await apteva.agents.start(agent.id);
+      setAgent(updated);
+    } catch (err) {
+      setError(
+        err instanceof AptevaError
+          ? err.body || `error ${err.status}`
+          : "agent lifecycle call failed",
+      );
+    } finally {
+      setLifecycleBusy(false);
+    }
+  };
+
+  const running = agent?.status === "running";
+
   return (
     <section className="surface flex flex-col" style={{ height: 480 }}>
       <header className="flex items-center gap-2 px-5 py-4 border-b border-[var(--color-border)]">
         <MessageSquare size={16} className="t-secondary" />
-        <div className="min-w-0">
+        <div className="min-w-0 flex-1">
           <h2 className="text-sm font-semibold t-primary">Chat</h2>
-          <p className="text-xs t-tertiary mt-0.5 truncate">
-            {agentName ? `Agent: ${agentName}` : "channel-chat · live"}
+          <p className="text-xs t-tertiary mt-0.5 truncate flex items-center gap-1.5">
+            {agent ? (
+              <>
+                <span
+                  className={
+                    "w-1.5 h-1.5 rounded-full shrink-0 " +
+                    (running ? "bg-[var(--color-green)]" : "bg-[var(--color-text-tertiary)]")
+                  }
+                />
+                Agent: {agent.name} · {agent.status}
+              </>
+            ) : (
+              "channel-chat · live"
+            )}
           </p>
         </div>
+        {agent && (
+          <button
+            type="button"
+            onClick={toggleAgent}
+            disabled={lifecycleBusy}
+            className="btn-ghost flex items-center gap-1.5 shrink-0"
+            title={running ? "Stop the agent process" : "Start the agent process"}
+          >
+            {running ? <Square size={13} /> : <Play size={13} />}
+            {lifecycleBusy ? "…" : running ? "Stop" : "Start"}
+          </button>
+        )}
       </header>
 
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-5 py-4 space-y-3">

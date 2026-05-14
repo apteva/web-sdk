@@ -84,13 +84,22 @@ For lower-level usage, `client.callTool(appName, toolName, args)` and the standa
 `client.agents` wraps the core `/api/agents/*` routes — the running apteva-core child processes.
 
 ```ts
+// Reads
 const agents = await apteva.agents.list();              // Agent[]
 const agent  = await apteva.agents.get(3);              // Agent
 const status = await apteva.agents.status(3);           // AgentStatus — iteration, rate, model, paused, uptime…
 const threads  = await apteva.agents.threads(3);        // Thread[]
 const channels = await apteva.agents.channels(3);       // ChannelInfo[]
 const history  = await apteva.agents.chatHistory(3, 50); // ChatHistoryMessage[]
+
+// Lifecycle
+await apteva.agents.start(3);        // spawn the process → updated Agent
+await apteva.agents.stop(3);         // terminate          → updated Agent
+await apteva.agents.restart(3);      // → { status: "restarted" }
+await apteva.agents.togglePause(3);  // → { paused: boolean } — toggle, not a setter
 ```
+
+`togglePause` is a *toggle* (the server has no separate resume endpoint) — check the returned `.paused` rather than assuming the new state.
 
 ## Activity / telemetry
 
