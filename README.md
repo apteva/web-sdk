@@ -79,6 +79,47 @@ If the MCP call returns a JSON-RPC error, the SDK throws `AptevaError(-1, messag
 
 For lower-level usage, `client.callTool(appName, toolName, args)` and the standalone `unwrapMCP(envelope)` are both exported.
 
+## Agents
+
+`client.agents` wraps the core `/api/agents/*` routes — the running apteva-core child processes.
+
+```ts
+const agents = await apteva.agents.list();              // Agent[]
+const agent  = await apteva.agents.get(3);              // Agent
+const status = await apteva.agents.status(3);           // AgentStatus — iteration, rate, model, paused, uptime…
+const threads  = await apteva.agents.threads(3);        // Thread[]
+const channels = await apteva.agents.channels(3);       // ChannelInfo[]
+const history  = await apteva.agents.chatHistory(3, 50); // ChatHistoryMessage[]
+```
+
+## Activity / telemetry
+
+`client.telemetry` wraps `/api/telemetry*` — reads plus a live SSE feed.
+
+```ts
+// Filtered event read
+const events = await apteva.telemetry.query({
+  agentId: 3, type: "tool.call", limit: 100,
+});
+
+// Aggregates
+const timeline = await apteva.telemetry.timeline(3, "24h"); // TimelineBucket[]
+const stats    = await apteva.telemetry.stats(3, "24h");    // TelemetryStats
+
+// Live feed — returns a handle, call .close() to stop
+const sub = apteva.telemetry.stream(3, (event) => {
+  console.log(event.type, event.data);
+});
+// later…
+sub.close();
+```
+
+`telemetry.stream` normalizes a server quirk where `event.data` occasionally arrives as a JSON-stringified string instead of an object.
+
+For any other SSE endpoint, `client.subscribe(path, params, onEvent, opts?)` is the generic form `telemetry.stream` is built on.
+
+**Node note:** `subscribe`/`stream` need a global `EventSource` (browsers, Deno, Bun, Node 22+). On older Node, pass a polyfill via `opts.EventSource`.
+
 ## Error handling
 
 Every non-2xx response and every MCP error throws an `AptevaError`:

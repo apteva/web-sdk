@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.0 — 2026-05-14
+
+Adds first-class **agents** and **activity/telemetry** surfaces — previously only reachable through the raw `client.get` escape hatch.
+
+- `client.agents` — `list`, `get`, `status`, `threads`, `channels`, `chatHistory`. Maps onto `/api/agents/*`.
+- `client.telemetry` — `query` (filtered event read), `timeline`, `stats`, and `stream` (live SSE feed). `stream` normalizes the server's occasional double-stringified `data` field.
+- `client.subscribe(path, params, onEvent, opts?)` — generic SSE wrapper `telemetry.stream` is built on. Injectable `EventSource` via `opts.EventSource` for Node < 22 / test doubles.
+- New exported types: `Agent`, `AgentStatus`, `Thread`, `ChannelInfo`, `ChatHistoryMessage`, `TelemetryEvent`, `TelemetryType`, `TelemetryQuery`, `TelemetryStats`, `TelemetryPeriod`, `TimelineBucket`, `StreamHandle`, `SubscribeOptions`, `EventSourceLike`, `EventSourceCtor`.
+- 19 new tests (62 total).
+
+
 ## 0.2.0 — 2026-05-13
 
 **Breaking**: class + interface renamed from `Apteve*` to `Apteva*` (typo fix — org name is `apteva`, not `apteve`).

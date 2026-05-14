@@ -1,6 +1,6 @@
 {
   "name": "@apteva/web-sdk",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Browser SDK for apteva-server. Handles auth (session cookie + API key + ?api_key=), wraps the /api/apps/<name>/* HTTP and MCP proxy, normalizes the MCP JSON-RPC envelope, and surfaces window.__APTEVA_APP__ when the UI is hosted on apteva-server itself. Framework-agnostic.",
   "license": "MIT",
   "author": "Apteva",

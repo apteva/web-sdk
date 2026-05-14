@@ -15,4 +15,22 @@ export type {
   MCPCallRequest,
   MCPCallResponse,
   User,
+  // agents
+  Agent,
+  AgentStatus,
+  Thread,
+  ChannelInfo,
+  ChatHistoryMessage,
+  // telemetry
+  TelemetryEvent,
+  TelemetryType,
+  TelemetryQuery,
+  TelemetryStats,
+  TelemetryPeriod,
+  TimelineBucket,
+  // streaming
+  StreamHandle,
+  SubscribeOptions,
+  EventSourceLike,
+  EventSourceCtor,
 } from "./types.js";

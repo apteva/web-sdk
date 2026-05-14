@@ -1,8 +1,21 @@
 import { AptevaError } from "./errors.js";
 import type {
+  Agent,
+  AgentStatus,
   AptevaClientOptions,
   AuthStatus,
+  ChannelInfo,
+  ChatHistoryMessage,
+  EventSourceCtor,
   MCPCallResponse,
+  StreamHandle,
+  SubscribeOptions,
+  TelemetryEvent,
+  TelemetryPeriod,
+  TelemetryQuery,
+  TelemetryStats,
+  Thread,
+  TimelineBucket,
   User,
 } from "./types.js";
 
@@ -61,6 +74,78 @@ export class AptevaClient {
       this.post<{ id: number; key: string }>("/api/auth/keys", { name }),
 
     deleteKey: (id: number) => this.del<void>(`/api/auth/keys/${id}`),
+  };
+
+  // Agents surface. Maps onto /api/agents/* — the running apteva-core
+  // child processes. (The server keeps /api/instances as an alias; the
+  // SDK uses the /agents path exclusively.)
+  readonly agents = {
+    list: () => this.get<Agent[]>("/api/agents"),
+
+    get: (id: number) => this.get<Agent>(`/api/agents/${id}`),
+
+    status: (id: number) => this.get<AgentStatus>(`/api/agents/${id}/status`),
+
+    threads: (id: number) => this.get<Thread[]>(`/api/agents/${id}/threads`),
+
+    channels: (id: number) => this.get<ChannelInfo[]>(`/api/agents/${id}/channels`),
+
+    chatHistory: (id: number, limit = 50) =>
+      this.get<ChatHistoryMessage[]>(
+        `/api/agents/${id}/chat-history?limit=${encodeURIComponent(String(limit))}`,
+      ),
+  };
+
+  // Activity / telemetry surface. query/timeline/stats are plain reads;
+  // stream() opens a live SSE feed (see subscribe() for the generic form).
+  readonly telemetry = {
+    // Filtered event read — GET /api/telemetry.
+    query: (q: TelemetryQuery) => {
+      const params = new URLSearchParams();
+      params.set("instance_id", String(q.agentId));
+      if (q.type) params.set("type", q.type);
+      if (q.threadId) params.set("thread_id", q.threadId);
+      if (q.since) params.set("since", q.since);
+      if (q.limit !== undefined) params.set("limit", String(q.limit));
+      return this.get<TelemetryEvent[]>(`/api/telemetry?${params.toString()}`);
+    },
+
+    // Time-bucketed aggregates — GET /api/telemetry/timeline.
+    timeline: (agentId: number, period: TelemetryPeriod = "24h") =>
+      this.get<TimelineBucket[]>(
+        `/api/telemetry/timeline?instance_id=${agentId}&period=${period}`,
+      ),
+
+    // Window counters — GET /api/telemetry/stats.
+    stats: (agentId: number, period: TelemetryPeriod = "24h") =>
+      this.get<TelemetryStats>(
+        `/api/telemetry/stats?instance_id=${agentId}&period=${period}`,
+      ),
+
+    // Live activity feed for one agent over SSE. Returns a handle —
+    // call .close() to tear down. The server occasionally emits the
+    // event's `data` field as a JSON-stringified string rather than an
+    // object; this normalizes it so callers always see an object.
+    stream: (
+      agentId: number,
+      onEvent: (event: TelemetryEvent) => void,
+      opts?: SubscribeOptions,
+    ): StreamHandle =>
+      this.subscribe<TelemetryEvent>(
+        "/api/telemetry/stream",
+        { instance_id: agentId },
+        (event) => {
+          if (typeof event.data === "string") {
+            try {
+              event.data = JSON.parse(event.data);
+            } catch {
+              /* leave as-is */
+            }
+          }
+          onEvent(event);
+        },
+        opts,
+      ),
   };
 
   // Build a handle for one installed app. The returned object knows
@@ -145,6 +230,53 @@ export class AptevaClient {
       url.searchParams.set("api_key", this.apiKey);
     }
     return this.baseURL ? this.baseURL + url.pathname + url.search : url.pathname + url.search;
+  }
+
+  // Open a live SSE subscription. Generic over the event payload type;
+  // each `message` frame's data is JSON-parsed and handed to onEvent.
+  // Malformed frames are dropped silently — SSE is best-effort, and one
+  // bad frame shouldn't kill the stream.
+  //
+  // Auth: EventSource can't set headers, so when an apiKey is configured
+  // it rides as ?api_key= (via sseURL); cookie auth works same-origin
+  // through withCredentials. Returns a StreamHandle — call .close().
+  //
+  // Node note: needs a global EventSource (Node 22+, browsers, Deno, Bun)
+  // or an injected one via opts.EventSource.
+  subscribe<E>(
+    path: string,
+    params: Record<string, string | number | undefined> | undefined,
+    onEvent: (event: E) => void,
+    opts?: SubscribeOptions,
+  ): StreamHandle {
+    const Ctor: EventSourceCtor | undefined =
+      opts?.EventSource ??
+      (globalThis as { EventSource?: EventSourceCtor }).EventSource;
+    if (!Ctor) {
+      throw new AptevaError(
+        0,
+        "no EventSource available — pass opts.EventSource (Node < 22 has no global EventSource)",
+      );
+    }
+    const url = this.sseURL(path, params);
+    const es = new Ctor(url, { withCredentials: true });
+
+    es.addEventListener("message", (ev: unknown) => {
+      const data = (ev as { data?: unknown })?.data;
+      if (typeof data !== "string" || data === "") return;
+      let parsed: E;
+      try {
+        parsed = JSON.parse(data) as E;
+      } catch {
+        return; // drop malformed frame
+      }
+      onEvent(parsed);
+    });
+    if (opts?.onError) {
+      es.addEventListener("error", opts.onError);
+    }
+
+    return { close: () => es.close() };
   }
 
   // --- internals ---
