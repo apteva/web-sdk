@@ -2,6 +2,7 @@ import { LogOut, Sparkles } from "lucide-react";
 import type { User } from "@apteva/web-sdk";
 import { LeadsCard } from "../components/LeadsCard";
 import { TablesCard } from "../components/TablesCard";
+import { ChatCard } from "../components/ChatCard";
 
 interface Props {
   user: User;
@@ -37,9 +38,12 @@ export function Dashboard({ user, onLogout }: Props) {
         </div>
       </header>
 
-      <main className="max-w-6xl mx-auto px-6 py-8 grid gap-6 grid-cols-1 lg:grid-cols-2 fade-up">
-        <LeadsCard />
-        <TablesCard />
+      <main className="max-w-6xl mx-auto px-6 py-8 space-y-6 fade-up">
+        <div className="grid gap-6 grid-cols-1 lg:grid-cols-2">
+          <LeadsCard />
+          <TablesCard />
+        </div>
+        <ChatCard />
       </main>
     </div>
   );

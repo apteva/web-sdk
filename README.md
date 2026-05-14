@@ -120,6 +120,36 @@ For any other SSE endpoint, `client.subscribe(path, params, onEvent, opts?)` is 
 
 **Node note:** `subscribe`/`stream` need a global `EventSource` (browsers, Deno, Bun, Node 22+). On older Node, pass a polyfill via `opts.EventSource`.
 
+## Chat
+
+`client.chat` wraps the built-in `channel-chat` app — one chat is bound to one agent, and the agent's reply streams back token-by-token.
+
+```ts
+// Pick an agent, get/create its chat, load history
+const [agent] = await apteva.agents.list();
+const chat = await apteva.chat.create(agent.id);
+const history = await apteva.chat.messages(chat.id, { limit: 200 });
+
+// Live feed — the SSE stream interleaves full message rows and token
+// deltas; the SDK discriminates them for you.
+const sub = apteva.chat.stream(chat.id, {
+  since: history.at(-1)?.id ?? 0,
+  onMessage: (m) => { /* full ChatMessage row — user | agent | system */ },
+  onDelta:   (d) => { /* StreamFrame: append d.text until d.done */ },
+});
+
+// Send — posts the user message AND triggers the agent's reply
+await apteva.chat.send(chat.id, "what's the status of order 4821?");
+
+sub.close();
+```
+
+`chat.send` returns the persisted user message, so you can swap an optimistic bubble for the real row.
+
+**Rendering note:** `ChatMessage.components[]` carries the agent's `respond(components=…)` attachments. The SDK hands you the data, but rendering app-provided UI components needs a dynamic-component loader the SDK doesn't include yet — third-party UIs render text + a placeholder for now.
+
+A complete reference chat UI (message list, composer, streaming bubbles, optimistic send) lives in [`examples/dashboard/src/components/ChatCard.tsx`](./examples/dashboard/src/components/ChatCard.tsx).
+
 ## Error handling
 
 Every non-2xx response and every MCP error throws an `AptevaError`:

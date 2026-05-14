@@ -213,6 +213,77 @@ export interface TimelineBucket {
 
 export type TelemetryPeriod = "1h" | "24h" | "7d";
 
+// --- Chat -----------------------------------------------------------------
+//
+// Chat is served by the built-in `channel-chat` app. The SDK reaches it
+// through the standard app proxy at /api/apps/channel-chat/*. One chat
+// belongs to one agent; messages flow both ways and the agent's response
+// streams token-by-token as StreamFrames on the same SSE feed.
+
+export interface Chat {
+  id: string;
+  // The agent (apteva-core process) this chat is bound to. The wire
+  // field is `instance_id` — kept as-is to match the server payload.
+  instance_id: number;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  thread_id?: string;
+}
+
+// A render hint the agent attached via the chat MCP's
+// respond(components=…). The dashboard mounts each as a UIComponent
+// from the named app; third-party UIs get the data but must render it
+// themselves (no dynamic-component loader in the SDK yet).
+export interface ChatComponent {
+  app: string;
+  name: string;
+  props?: Record<string, unknown>;
+}
+
+export interface ChatMessage {
+  id: number;
+  chat_id: string;
+  role: "user" | "agent" | "system";
+  content: string;
+  user_id?: number;
+  thread_id?: string;
+  // "streaming" while the agent is still producing it, "final" once done.
+  status: "streaming" | "final";
+  created_at: string;
+  // Rich attachments — always present (may be empty).
+  components: ChatComponent[];
+}
+
+// Ephemeral token-delta frame on the chat SSE stream. Distinguished
+// from a full ChatMessage by `type: "stream"` — ChatMessage has no
+// `type` field. Assemble bubbles by appending `text` until `done`.
+export interface StreamFrame {
+  type: "stream";
+  chat_id: string;
+  thread_id: string;
+  call_id: string;
+  text: string;
+  done: boolean;
+  created_at: string;
+}
+
+export interface ChatMessagesQuery {
+  since?: number; // message id cursor — 0 = from the start
+  limit?: number; // default 500 server-side
+}
+
+// Options for chat.stream(). onMessage gets full ChatMessage rows;
+// onDelta gets the token-by-token StreamFrames. Either may be omitted.
+export interface ChatStreamOptions {
+  onMessage?: (message: ChatMessage) => void;
+  onDelta?: (frame: StreamFrame) => void;
+  since?: number;
+  // Same injectable EventSource escape hatch as subscribe().
+  EventSource?: EventSourceCtor;
+  onError?: (err: unknown) => void;
+}
+
 // --- SSE / streaming ------------------------------------------------------
 
 // Handle returned by subscribe() / telemetry.stream(). Call close() to

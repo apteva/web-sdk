@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.0 — 2026-05-14
+
+Adds the **chat** surface — `client.chat` wraps the built-in `channel-chat` app.
+
+- `client.chat` — `list`, `create`, `messages`, `send`, `stream`. `send` posts the user message and triggers the agent's reply in one call. `stream` discriminates the SSE feed's two frame types — full `ChatMessage` rows → `onMessage`, token-delta `StreamFrame`s → `onDelta` — so callers never touch the raw mixed stream.
+- New exported types: `Chat`, `ChatMessage`, `ChatComponent`, `StreamFrame`, `ChatMessagesQuery`, `ChatStreamOptions`.
+- Reference chat UI (message list, composer, streaming bubbles, optimistic send) added to `examples/dashboard/` as `ChatCard.tsx`.
+- 10 new tests (72 total).
+
+Note: `ChatMessage.components[]` (the agent's `respond(components=…)` attachments) is delivered as data; rendering app-provided components needs a loader not yet in the SDK.
+
+
 ## 0.3.0 — 2026-05-14
 
 Adds first-class **agents** and **activity/telemetry** surfaces — previously only reachable through the raw `client.get` escape hatch.

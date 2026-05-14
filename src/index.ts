@@ -28,6 +28,13 @@ export type {
   TelemetryStats,
   TelemetryPeriod,
   TimelineBucket,
+  // chat
+  Chat,
+  ChatMessage,
+  ChatComponent,
+  ChatMessagesQuery,
+  ChatStreamOptions,
+  StreamFrame,
   // streaming
   StreamHandle,
   SubscribeOptions,

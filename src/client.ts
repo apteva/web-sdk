@@ -5,9 +5,14 @@ import type {
   AptevaClientOptions,
   AuthStatus,
   ChannelInfo,
+  Chat,
   ChatHistoryMessage,
+  ChatMessage,
+  ChatMessagesQuery,
+  ChatStreamOptions,
   EventSourceCtor,
   MCPCallResponse,
+  StreamFrame,
   StreamHandle,
   SubscribeOptions,
   TelemetryEvent,
@@ -145,6 +150,65 @@ export class AptevaClient {
           onEvent(event);
         },
         opts,
+      ),
+  };
+
+  // Chat surface. Wraps the built-in `channel-chat` app at
+  // /api/apps/channel-chat/*. One chat is bound to one agent; send()
+  // posts a user message AND triggers the agent to respond, whose
+  // reply streams back token-by-token over stream().
+  readonly chat = {
+    // List an agent's chats — GET /chats?instance_id=.
+    list: (agentId: number) =>
+      this.get<Chat[]>(
+        `/api/apps/channel-chat/chats?instance_id=${agentId}`,
+      ),
+
+    // Create (or get the default) chat for an agent — POST /chats.
+    create: (agentId: number, title?: string) =>
+      this.post<Chat>("/api/apps/channel-chat/chats", {
+        agent_id: agentId,
+        title,
+      }),
+
+    // History — GET /messages. `since` is a message-id cursor (0 = start).
+    messages: (chatId: string, query: ChatMessagesQuery = {}) => {
+      const params = new URLSearchParams({ chat_id: chatId });
+      params.set("since", String(query.since ?? 0));
+      if (query.limit !== undefined) params.set("limit", String(query.limit));
+      return this.get<ChatMessage[]>(
+        `/api/apps/channel-chat/messages?${params.toString()}`,
+      );
+    },
+
+    // Send a user message — POST /messages. The server appends it and
+    // forwards it to the agent's /event endpoint, so this one call both
+    // records the message and triggers the agent's reply. Returns the
+    // persisted user message row.
+    send: (chatId: string, content: string) =>
+      this.post<ChatMessage>(
+        `/api/apps/channel-chat/messages?chat_id=${encodeURIComponent(chatId)}`,
+        { content },
+      ),
+
+    // Live feed for one chat. The SSE stream interleaves two frame
+    // shapes; this discriminates them so callers never see the raw
+    // mixed stream:
+    //   - full ChatMessage rows  → opts.onMessage
+    //   - StreamFrame deltas (type:"stream") → opts.onDelta
+    // Returns a StreamHandle — call .close() to stop.
+    stream: (chatId: string, opts: ChatStreamOptions): StreamHandle =>
+      this.subscribe<ChatMessage | StreamFrame>(
+        "/api/apps/channel-chat/stream",
+        { chat_id: chatId, since: opts.since ?? 0 },
+        (frame) => {
+          if ((frame as StreamFrame).type === "stream") {
+            opts.onDelta?.(frame as StreamFrame);
+          } else {
+            opts.onMessage?.(frame as ChatMessage);
+          }
+        },
+        { EventSource: opts.EventSource, onError: opts.onError },
       ),
   };
 
