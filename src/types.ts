@@ -322,4 +322,12 @@ export interface SubscribeOptions {
   // Called on the EventSource "error" event. SSE auto-reconnects, so this
   // is informational — the stream stays open unless you close() it.
   onError?: (err: unknown) => void;
+  // SSE event names to listen for. Defaults to ["message"] — the
+  // unnamed default-event channel. Servers that emit `event: <name>\n`
+  // lines (named events) need their names here, or those frames are
+  // silently dropped. EventSource only delivers to listeners
+  // registered for matching event names. Each delivered payload is
+  // JSON-parsed and handed to onEvent — discriminate by an in-payload
+  // field if multiple event types share one handler.
+  eventTypes?: string[];
 }

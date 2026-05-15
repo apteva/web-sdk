@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.1 — 2026-05-15
+
+**Bug fix**: `chat.stream` was silently dropping every streaming frame because the server emits them as named SSE events (`event: stream`) and the SDK only listened on the default channel.
+
+- `client.subscribe()` gains an `eventTypes` option (default `["message"]`); registers one listener per event name.
+- `client.chat.stream()` now passes `eventTypes: ["message", "stream"]` so token-delta frames actually arrive.
+- Regression test guarding against silent default-event-only listeners.
+
+If you saw the chat work but never witnessed streaming, this was why.
+
+
 ## 0.5.0 — 2026-05-14
 
 Adds agent **lifecycle** control to `client.agents`.

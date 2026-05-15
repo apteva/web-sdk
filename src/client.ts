@@ -213,9 +213,13 @@ export class AptevaClient {
         { content },
       ),
 
-    // Live feed for one chat. The SSE stream interleaves two frame
-    // shapes; this discriminates them so callers never see the raw
-    // mixed stream:
+    // Live feed for one chat. The chat SSE interleaves two frame
+    // shapes on two SSE event names:
+    //   - default ("message") events  → full ChatMessage rows
+    //   - named "stream" events       → StreamFrame deltas
+    // We register listeners for both names — EventSource silently
+    // drops named events from the default handler — and discriminate
+    // by frame.type so callers see two clean streams:
     //   - full ChatMessage rows  → opts.onMessage
     //   - StreamFrame deltas (type:"stream") → opts.onDelta
     // Returns a StreamHandle — call .close() to stop.
@@ -230,7 +234,11 @@ export class AptevaClient {
             opts.onMessage?.(frame as ChatMessage);
           }
         },
-        { EventSource: opts.EventSource, onError: opts.onError },
+        {
+          EventSource: opts.EventSource,
+          onError: opts.onError,
+          eventTypes: ["message", "stream"],
+        },
       ),
   };
 
@@ -347,7 +355,13 @@ export class AptevaClient {
     const url = this.sseURL(path, params);
     const es = new Ctor(url, { withCredentials: true });
 
-    es.addEventListener("message", (ev: unknown) => {
+    // Default event name "message" handles unnamed (default) frames.
+    // Servers that emit named events (`event: foo\n`) need their
+    // names listed in opts.eventTypes — EventSource won't deliver
+    // those to the default "message" handler. The chat SSE for
+    // example sends StreamFrame as `event: stream`.
+    const eventTypes = opts?.eventTypes ?? ["message"];
+    const handle = (ev: unknown) => {
       const data = (ev as { data?: unknown })?.data;
       if (typeof data !== "string" || data === "") return;
       let parsed: E;
@@ -357,7 +371,10 @@ export class AptevaClient {
         return; // drop malformed frame
       }
       onEvent(parsed);
-    });
+    };
+    for (const name of eventTypes) {
+      es.addEventListener(name as "message", handle);
+    }
     if (opts?.onError) {
       es.addEventListener("error", opts.onError);
     }

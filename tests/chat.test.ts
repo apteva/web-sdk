@@ -88,19 +88,20 @@ class FakeEventSource implements EventSourceLike {
   static last: FakeEventSource | undefined;
   url: string;
   closed = false;
-  private listeners: Record<string, Array<(ev: unknown) => void>> = {};
+  listeners: Record<string, Array<(ev: unknown) => void>> = {};
   constructor(url: string) {
     this.url = url;
     FakeEventSource.last = this;
   }
-  addEventListener(type: "message" | "error", fn: (ev: unknown) => void) {
+  addEventListener(type: string, fn: (ev: unknown) => void) {
     (this.listeners[type] ??= []).push(fn);
   }
   close() {
     this.closed = true;
   }
-  emit(data: string) {
-    for (const fn of this.listeners["message"] ?? []) fn({ data });
+  // Emit a frame on a specific SSE event name. Default = "message".
+  emit(data: string, type: string = "message") {
+    for (const fn of this.listeners[type] ?? []) fn({ data });
   }
 }
 const FakeES = FakeEventSource as unknown as EventSourceCtor;
@@ -127,11 +128,14 @@ describe("chat.stream() — frame discrimination", () => {
     expect(messages[0]?.role).toBe("agent");
   });
 
-  test("type:'stream' frames go to onDelta", () => {
+  test("stream frames arrive on the named 'stream' SSE event", () => {
     const c = new AptevaClient({ baseURL: "https://x.example.com" });
     const deltas: StreamFrame[] = [];
     c.chat.stream("chat-1", { onDelta: (d) => deltas.push(d), EventSource: FakeES });
     const es = FakeEventSource.last!;
+    // Real server emits StreamFrames as `event: stream\ndata: ...`,
+    // not on the default channel — emit() defaults to "message", so
+    // pass "stream" explicitly to exercise the named-event path.
     es.emit(
       JSON.stringify({
         type: "stream",
@@ -142,6 +146,7 @@ describe("chat.stream() — frame discrimination", () => {
         done: false,
         created_at: "2026-05-14T08:00:02Z",
       }),
+      "stream",
     );
     es.emit(
       JSON.stringify({
@@ -153,9 +158,20 @@ describe("chat.stream() — frame discrimination", () => {
         done: true,
         created_at: "2026-05-14T08:00:03Z",
       }),
+      "stream",
     );
     expect(deltas.map((d) => d.text)).toEqual(["hel", "lo"]);
     expect(deltas[1]?.done).toBe(true);
+  });
+
+  test("registers listeners for BOTH 'message' and 'stream' event names", () => {
+    // Regression guard for the bug where chat.stream only listened
+    // for default-event frames and silently dropped every stream
+    // frame the server emitted as `event: stream`.
+    const c = new AptevaClient({ baseURL: "https://x.example.com" });
+    c.chat.stream("chat-1", { onDelta: () => {}, EventSource: FakeES });
+    const es = FakeEventSource.last!;
+    expect(Object.keys(es.listeners).sort()).toEqual(["message", "stream"]);
   });
 
   test("interleaved frames route to the right handler", () => {
@@ -169,8 +185,8 @@ describe("chat.stream() — frame discrimination", () => {
     });
     const es = FakeEventSource.last!;
     es.emit(JSON.stringify(MSG({ id: 1, role: "user", content: "hi" })));
-    es.emit(JSON.stringify({ type: "stream", chat_id: "chat-1", thread_id: "t", call_id: "c", text: "h", done: false, created_at: "" }));
-    es.emit(JSON.stringify({ type: "stream", chat_id: "chat-1", thread_id: "t", call_id: "c", text: "i", done: true, created_at: "" }));
+    es.emit(JSON.stringify({ type: "stream", chat_id: "chat-1", thread_id: "t", call_id: "c", text: "h", done: false, created_at: "" }), "stream");
+    es.emit(JSON.stringify({ type: "stream", chat_id: "chat-1", thread_id: "t", call_id: "c", text: "i", done: true, created_at: "" }), "stream");
     es.emit(JSON.stringify(MSG({ id: 2, role: "agent", content: "hi", status: "final" })));
     expect(messages.map((m) => m.id)).toEqual([1, 2]);
     expect(deltas.map((d) => d.text)).toEqual(["h", "i"]);

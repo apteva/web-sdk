@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { MessageSquare, Play, Send, Square } from "lucide-react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { AptevaError } from "@apteva/web-sdk";
 import type { Agent, Chat, ChatMessage, StreamFrame, StreamHandle } from "@apteva/web-sdk";
 import { apteva } from "../lib/apteva";
@@ -25,6 +27,7 @@ interface DisplayMessage {
   role: ChatMessage["role"];
   content: string;
   streaming: boolean;
+  thinking?: boolean;
 }
 
 export function ChatCard() {
@@ -32,6 +35,7 @@ export function ChatCard() {
   const [agent, setAgent] = useState<Agent | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [streamBuffers, setStreamBuffers] = useState<Record<string, string>>({});
+  const [thinkingSince, setThinkingSince] = useState<number | null>(null);
   const [input, setInput] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -71,7 +75,8 @@ export function ChatCard() {
         subRef.current = apteva.chat.stream(c.id, {
           since: history.length ? history[history.length - 1]!.id : 0,
           onMessage: (m) => {
-            // Upsert by id; a final agent row clears streaming buffers.
+            // Upsert by id; a final agent row clears streaming buffers
+            // and the thinking indicator — the conversation has caught up.
             setMessages((prev) => {
               const next = prev.filter((p) => p.id !== m.id);
               next.push(m);
@@ -79,15 +84,24 @@ export function ChatCard() {
             });
             if (m.role === "agent" && m.status === "final") {
               setStreamBuffers({});
+              setThinkingSince(null);
             }
           },
           onDelta: (f: StreamFrame) => {
-            setStreamBuffers((prev) => ({
-              ...prev,
-              [f.call_id]: (prev[f.call_id] ?? "") + f.text,
-            }));
+            // f.text is the FULL accumulated response so far, not a
+            // delta — replace, don't append. (From the dashboard's
+            // ChatPanel: "Frames carry monotonically growing text;
+            // setting state to the latest is enough, no reducer.")
+            setStreamBuffers((prev) => ({ ...prev, [f.call_id]: f.text }));
           },
         });
+
+        // Thinking indicator: driven client-side off send→reply, not
+        // off telemetry. Empirically, not every agent setup emits
+        // llm.start (the dashboard's chosen signal), and event-shape
+        // can drift across versions. Using the events we DO control
+        // — user send and final agent message arrival — is both
+        // reliable and simpler.
       } catch (err) {
         if (cancelled) return;
         setError(
@@ -103,10 +117,16 @@ export function ChatCard() {
   }, []);
 
   // Merge persisted rows + in-flight streaming buffers into one list.
+  // Sort by created_at (ISO-8601 strings sort lexically), id as tiebreaker.
+  // Chronological order keeps optimistic temp rows at the bottom while
+  // they're pending, regardless of the temp id's sign.
   const display = useMemo<DisplayMessage[]>(() => {
     const rows: DisplayMessage[] = messages
       .slice()
-      .sort((a, b) => a.id - b.id)
+      .sort((a, b) => {
+        const ca = a.created_at.localeCompare(b.created_at);
+        return ca !== 0 ? ca : a.id - b.id;
+      })
       .map((m) => ({
         key: `msg-${m.id}`,
         role: m.role,
@@ -116,8 +136,14 @@ export function ChatCard() {
     for (const [callId, text] of Object.entries(streamBuffers)) {
       if (text) rows.push({ key: `stream-${callId}`, role: "agent", content: text, streaming: true });
     }
+    // Inline thinking placeholder — shown only when we're waiting for
+    // a reply and no streaming text has arrived yet. The streaming
+    // bubble takes over as soon as the first frame lands.
+    if (thinkingSince !== null && Object.keys(streamBuffers).length === 0) {
+      rows.push({ key: "thinking", role: "agent", content: "", streaming: true, thinking: true });
+    }
     return rows;
-  }, [messages, streamBuffers]);
+  }, [messages, streamBuffers, thinkingSince]);
 
   // Auto-scroll to the newest message.
   useEffect(() => {
@@ -129,6 +155,7 @@ export function ChatCard() {
     if (!text || !chat || sending) return;
     setInput("");
     setSending(true);
+    setThinkingSince(Date.now()); // cleared when the agent's final reply lands
     // Optimistic: temp negative id so it can't collide with a real row.
     const tempId = -Date.now();
     setMessages((prev) => [
@@ -145,8 +172,15 @@ export function ChatCard() {
     ]);
     try {
       const real = await apteva.chat.send(chat.id, text);
-      // Swap the temp row for the persisted one.
-      setMessages((prev) => prev.filter((m) => m.id !== tempId).concat(real));
+      // Swap the temp row for the persisted one. Dedupe against
+      // real.id too — the SSE stream may have already delivered this
+      // message via onMessage between the POST going out and coming
+      // back. Without filtering real.id we'd end up with two copies.
+      setMessages((prev) =>
+        prev
+          .filter((m) => m.id !== tempId && m.id !== real.id)
+          .concat(real),
+      );
     } catch (err) {
       setMessages((prev) => prev.filter((m) => m.id !== tempId));
       setError(
@@ -234,6 +268,7 @@ export function ChatCard() {
         )}
       </div>
 
+
       <form
         onSubmit={(e) => {
           e.preventDefault();
@@ -271,19 +306,51 @@ function Bubble({ msg }: { msg: DisplayMessage }) {
       </div>
     );
   }
+  // Empty-content streaming agent bubble = "thinking" placeholder.
+  if (msg.thinking) {
+    return (
+      <div className="flex justify-start">
+        <div className="surface-inset rounded-2xl px-3.5 py-2.5 inline-flex items-center gap-1.5">
+          <span className="w-1.5 h-1.5 rounded-full bg-[var(--color-text-tertiary)] animate-pulse" />
+          <span
+            className="w-1.5 h-1.5 rounded-full bg-[var(--color-text-tertiary)] animate-pulse"
+            style={{ animationDelay: "150ms" }}
+          />
+          <span
+            className="w-1.5 h-1.5 rounded-full bg-[var(--color-text-tertiary)] animate-pulse"
+            style={{ animationDelay: "300ms" }}
+          />
+        </div>
+      </div>
+    );
+  }
   return (
     <div className={`flex ${mine ? "justify-end" : "justify-start"}`}>
       <div
         className={
-          "max-w-[78%] rounded-2xl px-3.5 py-2 text-sm leading-relaxed " +
+          "max-w-[78%] rounded-2xl px-3.5 py-2 text-sm leading-relaxed break-words " +
           (mine
-            ? "bg-[var(--color-accent)] text-white"
+            ? "bg-[var(--color-accent)] text-white whitespace-pre-wrap"
             : "surface-inset t-primary")
         }
       >
-        {msg.content}
-        {msg.streaming && <span className="inline-block w-1.5 h-3.5 ml-0.5 align-middle bg-current opacity-50 animate-pulse" />}
+        {mine ? (
+          msg.content
+        ) : (
+          // Agent messages — render markdown (bold, lists, code, links,
+          // tables via GFM). Mid-stream partial markdown is handled
+          // gracefully by react-markdown.
+          <div className="markdown-body">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+              {msg.content}
+            </ReactMarkdown>
+          </div>
+        )}
+        {msg.streaming && (
+          <span className="inline-block w-1.5 h-3.5 ml-0.5 align-middle bg-current opacity-50 animate-pulse" />
+        )}
       </div>
     </div>
   );
 }
+
