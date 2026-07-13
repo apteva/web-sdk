@@ -50,6 +50,7 @@ You can layer on an API key by setting `apiKey` in the constructor or calling `c
 const apteva = new AptevaClient({
   baseURL: "...",
   apiKey: "sk-...",     // optional
+  projectId: "proj_123", // routes project-scoped app HTTP and MCP calls
   onUnauthorized: () => router.push("/login"),  // fires once per 401
   timeoutMs: 30_000,    // default, 0 disables
 });
@@ -92,11 +93,32 @@ const threads  = await apteva.agents.threads(3);        // Thread[]
 const channels = await apteva.agents.channels(3);       // ChannelInfo[]
 const history  = await apteva.agents.chatHistory(3, 50); // ChatHistoryMessage[]
 
+// Management
+await apteva.agents.create({
+  name: "Support",
+  directive: "Answer customer questions.",
+  mode: "cautious",
+  project_id: "proj_123",
+});
+await apteva.agents.rename(3, "Support v2");
+await apteva.agents.update(3, { name: "Support v3" });
+await apteva.agents.delete(3);      // → { status: "deleted" }
+
+// Config and system MCPs
+const config = await apteva.agents.config(3);
+await apteva.agents.updateConfig(3, { ...config, mode: "learn" });
+await apteva.agents.systemMCP(3, "channels", true);
+
 // Lifecycle
 await apteva.agents.start(3);        // spawn the process → updated Agent
 await apteva.agents.stop(3);         // terminate          → updated Agent
 await apteva.agents.restart(3);      // → { status: "restarted" }
 await apteva.agents.togglePause(3);  // → { paused: boolean } — toggle, not a setter
+
+// Proxied core routes
+await apteva.agents.event(3, { message: "Summarize recent activity" });
+await apteva.agents.control(3, { action: "wake" });
+const events = apteva.agents.events(3, (event) => console.log(event.type));
 ```
 
 `togglePause` is a *toggle* (the server has no separate resume endpoint) — check the returned `.paused` rather than assuming the new state.

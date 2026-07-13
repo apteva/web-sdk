@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.2 — 2026-07-13
+
+Adds project-aware app routing and fuller agent administration to `client.agents`.
+
+- `projectId` on `AptevaClientOptions` automatically adds `project_id` to app HTTP routes, MCP tool calls, and `mcpURL()`.
+
+- `client.agents.create(input)` — POST `/api/agents`; returns either a full `Agent` or `AgentCreateWarning` when the row is created but cannot start.
+- `client.agents.update(id, { name })`, `rename(id, name)`, and `delete(id)` for basic row management.
+- `client.agents.config(id)` and `updateConfig(id, config)` for `/api/agents/:id/config`.
+- `client.agents.systemMCP(id, "channels", enable)` for the channels system-MCP toggle.
+- `client.agents.event(id, body)`, `control(id, body)`, and `events(id, handler)` for proxied core routes.
+- New exported types for create/update/config/system-MCP/core-event shapes.
+
 ## 0.5.1 — 2026-05-15
 
 **Bug fix**: `chat.stream` was silently dropping every streaming frame because the server emits them as named SSE events (`event: stream`) and the SDK only listened on the default channel.

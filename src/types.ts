@@ -55,6 +55,10 @@ export interface AptevaClientOptions {
   // Optional API key. When set, sent as `Authorization: Bearer <key>`
   // on every request. Leave undefined to rely on session cookies.
   apiKey?: string;
+  // Default project context for installed-app HTTP and MCP routes. The SDK
+  // appends it as ?project_id= so the server can select the project-scoped
+  // app installation before forwarding the request.
+  projectId?: string;
   // Custom fetch implementation (test injection, edge runtimes).
   fetch?: typeof fetch;
   // Called once whenever a request returns 401. The client throws an
@@ -105,6 +109,84 @@ export interface Agent {
   status: "running" | "stopped";
   project_id?: string;
   created_at: string;
+}
+
+export type AgentMode = "autonomous" | "cautious" | "learn";
+
+export interface AgentGrantRule {
+  resource?: string;
+  action?: string;
+  effect?: "allow" | "deny" | (string & {});
+  conditions?: Record<string, unknown>;
+}
+
+export interface AgentBoundAppGrant {
+  install_id: number;
+  default_effect?: "allow" | "deny" | (string & {});
+  rules: AgentGrantRule[];
+}
+
+// POST /api/agents request body. `config` is the server-side JSON blob
+// string used for MCP servers and other boot-time settings.
+export interface AgentCreateInput {
+  name: string;
+  directive?: string;
+  mode?: AgentMode;
+  config?: string;
+  project_id?: string;
+  start?: boolean;
+  include_channels?: boolean;
+  unconscious?: boolean;
+  template_id?: string;
+  bound_app_install_ids?: number[];
+  bound_app_grants?: AgentBoundAppGrant[];
+  bound_connection_ids?: number[];
+}
+
+// If the row is created but cannot start (for example no LLM provider is
+// configured), the server returns a compact warning shape instead of the full
+// Agent row. Successful creates return Agent.
+export interface AgentCreateWarning {
+  id: number;
+  name: string;
+  status: "stopped" | (string & {});
+  warning: string;
+}
+
+export type AgentCreateResult = Agent | AgentCreateWarning;
+
+export interface AgentUpdateInput {
+  name: string;
+}
+
+export interface AgentDeleteResult {
+  status: "deleted" | (string & {});
+}
+
+export interface AgentConfig {
+  directive?: string;
+  mode?: AgentMode | (string & {});
+  mcp_servers?: Array<Record<string, unknown>>;
+  providers?: Array<Record<string, unknown>>;
+  threads?: Array<Record<string, unknown>>;
+  unconscious?: boolean;
+  reset?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export interface AgentSystemMCPResult {
+  name: string;
+  enable: boolean;
+  previous: boolean;
+  restart_required: boolean;
+}
+
+export interface AgentCoreEvent {
+  id?: string;
+  type?: string;
+  thread_id?: string;
+  data?: unknown;
+  [key: string]: unknown;
 }
 
 // POST /api/agents/:id/restart response.

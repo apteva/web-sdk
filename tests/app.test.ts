@@ -57,6 +57,35 @@ describe("app handle — HTTP routes", () => {
     await c.app("flexylead").get("/x");
     expect(stub.last()?.headers["authorization"]).toBe("Bearer sk-app");
   });
+
+  test("projectId is appended to every app HTTP method", async () => {
+    for (const method of ["GET", "POST", "PUT", "PATCH", "DELETE"] as const) {
+      stub.setRoute(method, "/api/apps/flexylead/leads", () =>
+        method === "DELETE" ? new Response(null, { status: 204 }) : json({ ok: true }),
+      );
+    }
+    const app = new AptevaClient({
+      baseURL: stub.url,
+      projectId: "project/one",
+    }).app("flexylead");
+    await app.get("/leads");
+    await app.post("/leads", {});
+    await app.put("/leads", {});
+    await app.patch("/leads", {});
+    await app.del("/leads");
+    expect(stub.all().map((request) => new URL(request.url).searchParams.get("project_id"))).toEqual(
+      Array(5).fill("project/one"),
+    );
+  });
+
+  test("projectId preserves existing app query parameters", async () => {
+    stub.setRoute("GET", "/api/apps/flexylead/leads", () =>
+      json({ ok: true }),
+    );
+    const c = new AptevaClient({ baseURL: stub.url, projectId: "p1" });
+    await c.app("flexylead").get("/leads?limit=10");
+    expect(new URL(stub.last()!.url).search).toBe("?limit=10&project_id=p1");
+  });
 });
 
 describe("app handle — MCP tools", () => {
@@ -95,6 +124,19 @@ describe("app handle — MCP tools", () => {
     expect(sent.params.arguments).toEqual({});
   });
 
+  test("tool() routes through the configured project", async () => {
+    stub.setRoute("POST", "/api/apps/flexylead/mcp", () =>
+      json({
+        jsonrpc: "2.0",
+        id: 1,
+        result: { content: [{ type: "text", text: "null" }] },
+      }),
+    );
+    const c = new AptevaClient({ baseURL: stub.url, projectId: "p1" });
+    await c.app("flexylead").tool("leads_ping");
+    expect(new URL(stub.last()!.url).searchParams.get("project_id")).toBe("p1");
+  });
+
   test("MCP error envelope throws AptevaError(-1, message)", async () => {
     stub.setRoute("POST", "/api/apps/flexylead/mcp", () =>
       json({
@@ -120,6 +162,17 @@ describe("app handle — MCP tools", () => {
     expect(c.app("flexylead").mcpURL()).toBe("https://example.com/api/apps/flexylead/mcp");
     expect(c.app("flexylead").mcpURL({ api_key: "sk-x" })).toBe(
       "https://example.com/api/apps/flexylead/mcp?api_key=sk-x",
+    );
+
+    const projectClient = new AptevaClient({
+      baseURL: "https://example.com",
+      projectId: "project/one",
+    });
+    expect(projectClient.app("flexylead").mcpURL()).toBe(
+      "https://example.com/api/apps/flexylead/mcp?project_id=project%2Fone",
+    );
+    expect(projectClient.app("flexylead").mcpURL({ api_key: "sk-x" })).toBe(
+      "https://example.com/api/apps/flexylead/mcp?project_id=project%2Fone&api_key=sk-x",
     );
   });
 });

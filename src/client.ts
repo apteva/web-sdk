@@ -1,9 +1,16 @@
 import { AptevaError } from "./errors.js";
 import type {
   Agent,
+  AgentConfig,
+  AgentCoreEvent,
+  AgentCreateInput,
+  AgentCreateResult,
+  AgentDeleteResult,
   AgentPauseResult,
   AgentRestartResult,
   AgentStatus,
+  AgentSystemMCPResult,
+  AgentUpdateInput,
   AptevaClientOptions,
   AuthStatus,
   ChannelInfo,
@@ -31,6 +38,7 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 export class AptevaClient {
   private readonly baseURL: string;
   private apiKey?: string;
+  private readonly projectId?: string;
   private readonly fetchImpl: typeof fetch;
   private readonly onUnauthorized?: () => void;
   private readonly timeoutMs: number;
@@ -38,6 +46,7 @@ export class AptevaClient {
   constructor(opts: AptevaClientOptions) {
     this.baseURL = opts.baseURL.replace(/\/+$/, "");
     this.apiKey = opts.apiKey;
+    this.projectId = opts.projectId?.trim() || undefined;
     this.fetchImpl = opts.fetch ?? globalThis.fetch.bind(globalThis);
     this.onUnauthorized = opts.onUnauthorized;
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -89,7 +98,19 @@ export class AptevaClient {
   readonly agents = {
     list: () => this.get<Agent[]>("/api/agents"),
 
+    create: (input: AgentCreateInput) =>
+      this.post<AgentCreateResult>("/api/agents", input),
+
     get: (id: number) => this.get<Agent>(`/api/agents/${id}`),
+
+    update: (id: number, input: AgentUpdateInput) =>
+      this.put<Agent>(`/api/agents/${id}`, input),
+
+    rename: (id: number, name: string) =>
+      this.put<Agent>(`/api/agents/${id}`, { name }),
+
+    delete: (id: number) =>
+      this.del<AgentDeleteResult>(`/api/agents/${id}`),
 
     status: (id: number) => this.get<AgentStatus>(`/api/agents/${id}/status`),
 
@@ -101,6 +122,18 @@ export class AptevaClient {
       this.get<ChatHistoryMessage[]>(
         `/api/agents/${id}/chat-history?limit=${encodeURIComponent(String(limit))}`,
       ),
+
+    config: <R = AgentConfig>(id: number) =>
+      this.get<R>(`/api/agents/${id}/config`),
+
+    updateConfig: <R = AgentConfig>(id: number, config: AgentConfig) =>
+      this.put<R>(`/api/agents/${id}/config`, config),
+
+    systemMCP: (id: number, name: "channels" | "apteva-channels", enable: boolean) =>
+      this.post<AgentSystemMCPResult>(`/api/agents/${id}/system-mcp`, {
+        name,
+        enable,
+      }),
 
     // --- lifecycle ---
 
@@ -121,6 +154,21 @@ export class AptevaClient {
     // flip, so check `.paused` rather than assuming.
     togglePause: (id: number) =>
       this.post<AgentPauseResult>(`/api/agents/${id}/pause`, {}),
+
+    // --- proxied core routes ---
+
+    event: <R = unknown>(id: number, body: Record<string, unknown>) =>
+      this.post<R>(`/api/agents/${id}/event`, body),
+
+    control: <R = unknown>(id: number, body: Record<string, unknown>) =>
+      this.post<R>(`/api/agents/${id}/control`, body),
+
+    events: <E = AgentCoreEvent>(
+      id: number,
+      onEvent: (event: E) => void,
+      opts?: SubscribeOptions,
+    ): StreamHandle =>
+      this.subscribe<E>(`/api/agents/${id}/events`, undefined, onEvent, opts),
   };
 
   // Activity / telemetry surface. query/timeline/stats are plain reads;
@@ -251,18 +299,18 @@ export class AptevaClient {
     const base = `/api/apps/${encodeURIComponent(name)}`;
     return {
       name,
-      get: <R = T>(path: string) => this.get<R>(base + path),
+      get: <R = T>(path: string) => this.get<R>(this.appPath(base + path)),
       post: <R = T>(path: string, body?: unknown) =>
-        this.post<R>(base + path, body),
+        this.post<R>(this.appPath(base + path), body),
       put: <R = T>(path: string, body?: unknown) =>
-        this.put<R>(base + path, body),
+        this.put<R>(this.appPath(base + path), body),
       patch: <R = T>(path: string, body?: unknown) =>
-        this.patch<R>(base + path, body),
-      del: <R = T>(path: string) => this.del<R>(base + path),
+        this.patch<R>(this.appPath(base + path), body),
+      del: <R = T>(path: string) => this.del<R>(this.appPath(base + path)),
       tool: <R = T>(toolName: string, args: Record<string, unknown> = {}) =>
         this.callTool<R>(name, toolName, args),
       mcpURL: (queryParams?: Record<string, string>) => {
-        const u = new URL(this.baseURL + base + "/mcp", "http://_");
+        const u = new URL(this.baseURL + this.appPath(base + "/mcp"), "http://_");
         if (queryParams) {
           for (const [k, v] of Object.entries(queryParams)) {
             u.searchParams.set(k, v);
@@ -280,7 +328,7 @@ export class AptevaClient {
     toolName: string,
     args: Record<string, unknown>,
   ): Promise<R> {
-    const path = `/api/apps/${encodeURIComponent(appName)}/mcp`;
+    const path = this.appPath(`/api/apps/${encodeURIComponent(appName)}/mcp`);
     const body = {
       jsonrpc: "2.0",
       id: 1,
@@ -383,6 +431,15 @@ export class AptevaClient {
   }
 
   // --- internals ---
+
+  private appPath(path: string): string {
+    if (!this.projectId) return path;
+    const url = new URL(path, "http://_");
+    if (!url.searchParams.has("project_id")) {
+      url.searchParams.set("project_id", this.projectId);
+    }
+    return url.pathname + url.search + url.hash;
+  }
 
   private async request<R>(
     method: string,
