@@ -17,6 +17,27 @@ describe("auth carriers", () => {
     expect(stub.last()?.headers["authorization"]).toBe("Bearer sk-test");
   });
 
+  test("opaque accessToken is attached without relying on a token prefix", async () => {
+    const c = new AptevaClient({
+      baseURL: stub.url,
+      accessToken: "opaque-application-user-token",
+    });
+    await c.auth.me();
+    expect(stub.last()?.headers["authorization"]).toBe(
+      "Bearer opaque-application-user-token",
+    );
+  });
+
+  test("accessToken takes precedence over apiKey", async () => {
+    const c = new AptevaClient({
+      baseURL: stub.url,
+      apiKey: "sk-fallback",
+      accessToken: "opaque-user-token",
+    });
+    await c.auth.me();
+    expect(stub.last()?.headers["authorization"]).toBe("Bearer opaque-user-token");
+  });
+
   test("no Authorization header when apiKey is unset", async () => {
     const c = new AptevaClient({ baseURL: stub.url });
     await c.auth.me();
@@ -53,6 +74,34 @@ describe("auth carriers", () => {
   test("getApiKey returns the current key", () => {
     const c = new AptevaClient({ baseURL: stub.url, apiKey: "sk-x" });
     expect(c.getApiKey()).toBe("sk-x");
+  });
+
+  test("setAccessToken swaps the token and falls back to apiKey when cleared", async () => {
+    const c = new AptevaClient({ baseURL: stub.url, apiKey: "sk-fallback" });
+    c.setAccessToken("opaque-user-token");
+    expect(c.getAccessToken()).toBe("opaque-user-token");
+    await c.auth.me();
+    expect(stub.last()?.headers["authorization"]).toBe("Bearer opaque-user-token");
+
+    c.setAccessToken(undefined);
+    expect(c.getAccessToken()).toBeUndefined();
+    await c.auth.me();
+    expect(stub.last()?.headers["authorization"]).toBe("Bearer sk-fallback");
+  });
+
+  test("accessToken requests omit cookie credentials", async () => {
+    let credentials: RequestCredentials | undefined;
+    const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      credentials = init?.credentials;
+      return json({ user_id: 7 });
+    }) as typeof fetch;
+    const c = new AptevaClient({
+      baseURL: "https://agents.example.com",
+      accessToken: "opaque-user-token",
+      fetch: fetchImpl,
+    });
+    await c.auth.me();
+    expect(credentials).toBe("omit");
   });
 
   test("user-supplied Authorization header in init wins", async () => {
@@ -106,6 +155,32 @@ describe("auth namespace", () => {
     expect(paths).toContain("GET /api/auth/keys");
     expect(paths).toContain("POST /api/auth/keys");
     expect(paths).toContain("DELETE /api/auth/keys/9");
+  });
+});
+
+describe("projects namespace", () => {
+  test("list and get use the authenticated project routes", async () => {
+    stub.setRoute("GET", "/api/projects", () => json([{
+      id: "project-1",
+      user_id: 7,
+      name: "Website",
+      created_at: "2026-08-13T12:00:00Z",
+    }]));
+    stub.setRoute("GET", "/api/projects/project-1", () => json({
+      id: "project-1",
+      user_id: 7,
+      name: "Website",
+      created_at: "2026-08-13T12:00:00Z",
+    }));
+    const c = new AptevaClient({ baseURL: stub.url, apiKey: "sk-test" });
+
+    expect((await c.projects.list())[0]?.name).toBe("Website");
+    expect((await c.projects.get("project-1")).id).toBe("project-1");
+    expect(stub.all().map((request) => request.path)).toEqual([
+      "/api/projects",
+      "/api/projects/project-1",
+    ]);
+    expect(stub.last()?.headers.authorization).toBe("Bearer sk-test");
   });
 });
 

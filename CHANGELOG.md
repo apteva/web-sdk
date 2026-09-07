@@ -1,5 +1,60 @@
 # Changelog
 
+## 0.7.0 — 2026-09-07
+
+- Load app-owned frontend bundles from installed apps with `client.apps.load`; no per-app npm package is required.
+- Share authenticated scoped requests, verify asset hashes, check versions/React compatibility, and create fresh app clients and UI contexts.
+- Reference-count scoped styles and expose cancellation and disposal.
+- Preserve local extension/registry APIs and existing chat transports.
+
+## 0.6.0 — 2026-09-07
+
+- Add typed app-owned extensions through `defineAppExtension` and `client.use`.
+- Add project/install-scoped app handles, HTTP/MCP request options, and app SSE subscriptions sharing live client credentials.
+- Add framework-independent component references, manifest metadata types and a local export registry.
+- Expose installed-app discovery and explicit metadata/version compatibility checks.
+- Fix caller cancellation being overridden by request timeouts; retain cancellation and timeouts through response-body reads.
+- Add abortable fetch subscriptions with SSE resume IDs, optional cursor queries, bounded opt-in deduplication, configurable reconnect delay and terminal auth handling.
+- Add coordinated host-owned access-token renewal without automatically replaying HTTP requests.
+- Preserve legacy Channel Chat APIs; app-specific extensions and UI stay in app-owned packages.
+
+## 0.5.5 — 2026-08-15
+
+- Add a generic, opaque `accessToken` credential to `AptevaClient`, including
+  runtime `setAccessToken(...)` and `getAccessToken()` helpers. The SDK is not
+  coupled to Auth or any other token issuer.
+- Give `accessToken` precedence over `apiKey`, send it only in the Bearer
+  header, omit cookies, and force authenticated fetch streaming for SSE.
+- Keep legacy `apiKey: "uk_…"` behavior as a compatibility fallback while
+  removing token-prefix inference from the recommended integration.
+- Deprecate the Channel Chat-specific `client.delegatedUsers.create(...)`
+  flow in favor of server-policy-controlled application-user tokens.
+
+## 0.5.4 — 2026-08-13
+
+- Add `client.delegatedUsers.create(...)` for trusted-backend minting of
+  short-lived, subject-bound `uk_…` browser credentials.
+- Add atomic `client.chat.createOrResume(...)`, plus `chat.get(...)`,
+  `chat.markSeen(...)`, and recommended `chat.messages.list/send` aliases.
+- Delegated fetch and SSE requests omit cookie credentials, keep bearer tokens
+  in the Authorization header, and support aborting chat streams with a signal.
+- Extend chat types with external-subject and conversation-key metadata while
+  retaining the existing chat methods for compatibility.
+- Add `client.projects.list/get` so trusted setup screens can discover project
+  context instead of requiring users to copy project IDs manually.
+
+## 0.5.3 — 2026-08-10
+
+Adds the small chat transport primitives needed by reusable UI packages.
+
+- `client.chat.getOrCreate(agentId, title?)` resumes the most recently updated conversation and creates one only when needed.
+- Chat streams expose `onOpen`, including after native EventSource reconnects.
+- API-key streams use fetch-backed SSE with the canonical bearer header, so app chat streams stay live without putting private keys in URLs.
+- Chat sends and message rows support durable image attachments.
+- `chat.create(agentId, { title, directive })` and `chat.update(chatId, { title, directive, archived })` expose durable per-conversation instructions.
+- `chat.send(chatId, { content, clientMessageId, ... })` adds an object form while retaining the positional call for compatibility.
+- `StreamFrame.phase` is typed and the documentation now correctly describes `text` as cumulative replacement text rather than a delta to append.
+
 ## 0.5.2 — 2026-07-13
 
 Adds project-aware app routing and fuller agent administration to `client.agents`.

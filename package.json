@@ -1,13 +1,13 @@
 {
   "name": "@apteva/web-sdk",
-  "version": "0.5.2",
-  "description": "Browser SDK for apteva-server. Handles auth (session cookie + API key + ?api_key=), wraps the /api/apps/<name>/* HTTP and MCP proxy, normalizes the MCP JSON-RPC envelope, and surfaces window.__APTEVA_APP__ when the UI is hosted on apteva-server itself. Framework-agnostic.",
+  "version": "0.7.0",
+  "description": "Browser SDK for apteva-server. Handles session cookies, API keys, and opaque application-user access tokens; wraps app HTTP, MCP, agents, chat, telemetry, and authenticated SSE. Framework-agnostic.",
   "license": "MIT",
   "author": "Apteva",
   "homepage": "https://github.com/apteva/web-sdk",
   "repository": {
     "type": "git",
-    "url": "https://github.com/apteva/web-sdk"
+    "url": "git+https://github.com/apteva/web-sdk.git"
   },
   "bugs": {
     "url": "https://github.com/apteva/web-sdk/issues"
