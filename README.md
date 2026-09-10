@@ -743,8 +743,8 @@ Restoration failure handling:
 | Platform mint denied | Restore the Auth session; platform-protected access remains blocked. |
 | Unsupported or malformed storage format | Fail closed; login or logout replaces the record. |
 
-The explicit retry-safe and uncertain response codes require the accompanying
-Auth refresh-error classification fix. With older Auth versions, generic errors
+The explicit retry-safe and uncertain response codes require Auth v0.12.1
+or newer. With older Auth versions, generic errors
 are handled conservatively. A tab crash after server rotation but before saving
 the response cannot be recovered transparently with single-use refresh tokens.
 

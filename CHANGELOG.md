@@ -1,4 +1,4 @@
-## Unreleased
+## 0.10.0
 
 - Add generic opt-in managed Auth persistence (`auth.persistence: "local"`),
   `auth.restore()`, credential-free restoration state, and `auth.dispose()`.
@@ -9,6 +9,7 @@
 - Preserve memory-only defaults, explicit app credential selection and no write
   replay. Browsers without Web Locks/storage use memory-only login.
 - No implicit legacy-format import; adoption requires one login.
+- Pair persistence with Auth v0.12.1 for explicit retry-safe refresh errors.
 
 ## 0.9.0
 

@@ -1,6 +1,6 @@
 {
   "name": "@apteva/web-sdk",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "description": "Browser SDK for apteva-server. Handles session cookies, API keys, and opaque application-user access tokens; wraps app HTTP, MCP, agents, chat, telemetry, and authenticated SSE. Framework-agnostic.",
   "license": "MIT",
   "author": "Apteva",
