@@ -556,3 +556,72 @@ bun run serve
 ## License
 
 MIT
+
+## One client for Auth app sessions (v0.8.0)
+
+With Auth app v0.12.0 or newer, configure `auth` and use the same client for
+login, app requests, agents and logout:
+
+```ts
+const apteva = new AptevaClient({
+  baseURL: "https://agents.example.com",
+  projectId: "YOUR_PROJECT",
+  auth: {
+    clientId: "YOUR_PUBLIC_AUTH_CLIENT",
+    // installId: 209,              // when explicit install routing is needed
+    // organizationSlug: "default",// for a multi-organization Auth client
+    // profile: "commercial",      // requested role policy; checked by Auth
+    onSessionChange: session => renderUser(session?.user),
+  },
+});
+
+const user = await apteva.auth.login({ email, password });
+await apteva.app("conversations").get("/chats");
+await apteva.auth.logout();
+```
+
+`auth.register({ email, password, displayName? })` also supports signup. When
+email verification is required, it returns `verification_required: true` and
+does not establish a session. `auth.me()` reads the current Auth user;
+`auth.getSession()` returns a local copy of user, authorization and expiry
+metadata without credentials. `auth.status()` reports local session presence.
+`auth.refresh()` explicitly requests a fresh platform credential when needed.
+
+Auth owns identity and authorization. Configure its trusted role bindings and
+matching platform policies with `token_ttl_seconds: 60` before enabling protected
+app access. Login can succeed without app permissions; app calls then fail closed
+until an authorized policy can mint a token. A requested profile never grants a
+role. The SDK does not infer permissions or mint credentials itself.
+
+The SDK privately maintains the normal Auth session plus its short-lived
+platform token. Before an app request it renews a platform token that is within
+ten seconds of expiry. Expired/stale Auth credentials use the normal refresh
+flow. Concurrent operations share renewal and refresh-token rotation; no custom
+refresh callback or application token endpoint is required. Both the returned
+absolute expiry and remaining lifetime limit credential use. Fetch streams
+reconnect at token expiry and close on local logout. SDK stream reconnection is
+not server-side revocation: already-admitted work or a modified client may outlive
+token expiry unless the receiving app enforces its own lifetime.
+
+Sessions are kept **in memory**, not written to localStorage, sessionStorage or
+cookies. Reuse one client per application session. Reloads/new tabs require
+login and do not implicitly share a rotating refresh credential. Do not copy
+refresh tokens between clients/tabs. This release deliberately does not provide
+persistent/shared browser sessions.
+
+`auth` mode cannot be combined with `apiKey`, `accessToken` or
+`refreshAccessToken`; `setApiKey` and `setAccessToken` are unavailable in this
+mode. User requests omit cookies and never fall back to a kiosk or administrator
+credential. Platform administrator operations such as `auth.listKeys()` are
+rejected in app Auth mode. Without `auth` configuration, existing platform
+login and opaque-token APIs retain their original behavior.
+
+A temporary mint failure preserves the normal Auth session and blocks protected
+app requests. A rejected Auth refresh clears the session. Local logout clears
+credentials and streams immediately; a failed network logout still throws so the
+host can report that server-side revocation could not be confirmed. A late
+renewal cannot restore a logged-out session. HTTP writes are never automatically
+replayed after a 401; successful renewal prepares subsequent calls. Unlike legacy
+transport mode, a successfully recovered platform 401 does not trigger the
+`onUnauthorized` callback in managed Auth mode, although the original call still
+rejects. Reconcile a write's outcome before retrying it.

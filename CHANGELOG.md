@@ -1,3 +1,14 @@
+## 0.8.0
+
+- Add unified Auth app login/signup, user lookup, session metadata, automatic
+  platform-token renewal and logout through `AptevaClient({ auth })`.
+- Coordinate Auth refresh rotation and platform renewal, preserve rotated Auth
+  credentials during mint outages, and ignore late results after session changes.
+- Keep app-user credentials isolated from API keys/cookies; reconnect managed
+  streams at expiry and close them on logout. Existing SDK auth mode is unchanged.
+- Requires Auth v0.12.0 with explicit role bindings and platform policy lifetimes
+  of at most 60 seconds. Sessions are memory-only; reloads require login.
+
 # Changelog
 
 ## 0.7.0 — 2026-09-07

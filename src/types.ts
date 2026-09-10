@@ -59,6 +59,8 @@ declare global {
 export type AuthCarrier = "cookie" | "apiKey" | "accessToken";
 
 export interface AptevaClientOptions {
+  /** Unified Auth app sessions; cannot be combined with other credentials. */
+  auth?: import("./auth-session.js").AppAuthOptions;
   // Base URL of the apteva-server. "/api" is appended by the client
   // automatically; pass "https://agents.example.com", not
   // "https://agents.example.com/api".

@@ -1,3 +1,5 @@
+import { AuthSession } from "./auth-session.js";
+import type { AuthLoginInput, AuthSignupInput } from "./auth-session.js";
 import { loadAppFrontend, type LoadAppOptions, type LoadedAppFrontend } from "./frontend.js";
 import { AptevaError } from "./errors.js";
 import type { AppExtension, AppScope } from "./extensions.js";
@@ -51,6 +53,7 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 export class AptevaClient {
   private readonly baseURL: string;
   private apiKey?: string;
+  private readonly appAuth?: AuthSession;
   private accessToken?: string;
   private readonly projectId?: string;
   private readonly fetchImpl: typeof fetch;
@@ -70,11 +73,18 @@ export class AptevaClient {
     this.onUnauthorized = opts.onUnauthorized;
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.refreshTokenHook = opts.refreshAccessToken;
+    if (opts.auth) {
+      if (opts.apiKey || opts.accessToken || opts.refreshAccessToken) throw new Error("Configure auth without apiKey, accessToken or refreshAccessToken");
+      this.appAuth = new AuthSession(this.baseURL, this.projectId || "", opts.auth, this.fetchImpl, token => {
+        this.accessToken = token; this.credentialRevision++;
+      });
+    }
   }
 
   // Swap the API key at runtime. An accessToken, when configured, continues
   // to take precedence. Pass undefined to fall back to access-token/cookie auth.
   setApiKey(key: string | undefined): void {
+    if (this.appAuth) throw new Error("Auth manages credentials; use auth.login/logout");
     this.apiKey = key;
     this.credentialRevision++;
   }
@@ -87,6 +97,7 @@ export class AptevaClient {
   // opaque to the SDK: no issuer-specific prefix or response type is required.
   // Pass undefined to fall back to apiKey, then cookie auth.
   setAccessToken(token: string | undefined): void {
+    if (this.appAuth) throw new Error("Auth manages credentials; use auth.login/logout");
     this.accessToken = token;
     this.credentialRevision++;
   }
@@ -97,6 +108,7 @@ export class AptevaClient {
 
   /** Refresh once for concurrent callers. Undefined leaves credentials unchanged. */
   async refreshAccessToken(): Promise<boolean> {
+    if (this.appAuth) { await this.appAuth.token(true); return true; }
     if (!this.refreshTokenHook) return false;
     if (this.pendingTokenRefresh) return this.pendingTokenRefresh;
     const revision = this.credentialRevision;
@@ -130,17 +142,32 @@ export class AptevaClient {
   // on the server side that subsequent requests pick up automatically
   // when credentials: "include" is sent.
   readonly auth = {
-    register: (email: string, password: string, name?: string) =>
-      this.post<{ user: User }>("/api/auth/register", { email, password, name }),
+    register: (email: string | AuthSignupInput, password?: string, name?: string) => {
+      if (this.appAuth) return this.appAuth.register(typeof email === "string" ? { email, password: password || "", displayName: name } : email);
+      if (typeof email !== "string") throw new Error("Object signup requires auth configuration");
+      return this.post<{ user: User; verification_required?: boolean }>("/api/auth/register", { email, password, name });
+    },
 
-    login: (email: string, password: string) =>
-      this.post<User>("/api/auth/login", { email, password }),
+    login: (email: string | AuthLoginInput, password?: string) => {
+      if (this.appAuth) return this.appAuth.login(typeof email === "string" ? { email, password: password || "" } : email);
+      if (typeof email !== "string") throw new Error("Object login requires auth configuration");
+      return this.post<User>("/api/auth/login", { email, password });
+    },
 
-    logout: () => this.post<void>("/api/auth/logout", {}),
+    logout: () => this.appAuth ? this.appAuth.logout() : this.post<void>("/api/auth/logout", {}),
 
-    me: () => this.get<User>("/api/auth/me"),
+    me: () => this.appAuth ? this.appAuth.me() : this.get<User>("/api/auth/me"),
 
-    status: () => this.get<AuthStatus>("/api/auth/status"),
+    getSession: () => this.appAuth?.info(),
+
+    refresh: async () => {
+      if (!this.appAuth) throw new Error("Session refresh requires auth configuration");
+      await this.appAuth.token(true); return this.appAuth.info();
+    },
+
+    status: (): Promise<AuthStatus> => this.appAuth
+      ? Promise.resolve({ authenticated: Boolean(this.appAuth.info()), user: this.appAuth.info()?.user })
+      : this.get<AuthStatus>("/api/auth/status"),
 
     changePassword: (current: string, next: string) =>
       this.post<void>("/api/auth/password", { current, next }),
@@ -635,7 +662,7 @@ export class AptevaClient {
     // detection remains only as a compatibility fallback for legacy callers
     // that passed a delegated token through apiKey.
     const bearerToken = this.bearerToken();
-    if (opts?.transport === "fetch" || opts?.lastEventId !== undefined || opts?.cursorParam ||
+    if (this.appAuth || opts?.transport === "fetch" || opts?.lastEventId !== undefined || opts?.cursorParam ||
         opts?.deduplicate || opts?.reconnectDelayMs !== undefined ||
         (bearerToken && (this.isAccessTokenCredential() || !opts?.EventSource))) {
       return this.bindAbortSignal(this.subscribeWithFetch(path, params, onEvent, opts), opts?.signal);
@@ -724,16 +751,26 @@ export class AptevaClient {
       wakeReconnect = undefined;
     });
 
+    const detachAuth = this.appAuth?.onClear(() => close());
     const run = async () => {
       while (!closed) {
         controller = new AbortController();
-        const revision = this.credentialRevision;
+        let revision = this.credentialRevision;
+        let expiryTimer: ReturnType<typeof setTimeout> | undefined;
         try {
+          if (this.appAuth) {
+            await this.appAuth.token();
+            if (closed) break;
+            revision = this.credentialRevision;
+            const deadline = this.appAuth.platformDeadline();
+            expiryTimer = setTimeout(() => controller?.abort(), Math.max(1, deadline - Date.now()));
+          }
           const url = new URL(this.baseURL + path, "http://_");
           for (const [key, value] of Object.entries(params ?? {})) {
             if (value !== undefined && value !== "") url.searchParams.set(key, String(value));
           }
           if (opts?.cursorParam && lastEventId) url.searchParams.set(opts.cursorParam, lastEventId);
+          if (this.appAuth && ["api_key", "access_token"].some(key => url.searchParams.has(key))) throw new AptevaError(403, "Auth mode does not accept URL credentials");
           const headers = new Headers({ Accept: "text/event-stream" });
           const bearerToken = this.bearerToken();
           if (bearerToken) headers.set("Authorization", `Bearer ${bearerToken}`);
@@ -741,6 +778,7 @@ export class AptevaClient {
           const response = await this.fetchImpl(this.baseURL + url.pathname + url.search, {
             method: "GET", headers,
             credentials: this.isAccessTokenCredential() ? "omit" : "include",
+            ...(this.appAuth ? { redirect: "error" as const } : {}),
             signal: controller.signal,
           });
           if (closed) { await response.body?.cancel(); break; }
@@ -750,7 +788,7 @@ export class AptevaClient {
               const renewed = !renewedSinceOpen && await this.renewAfterUnauthorized(revision);
               renewedSinceOpen = renewed;
               if (closed) break;
-              this.onUnauthorized?.();
+              if (!this.appAuth || !renewed) this.onUnauthorized?.();
               reportError(new AptevaError(401, "SSE connection failed (401)"));
               if (!renewed) { close(); break; }
               continue;
@@ -821,7 +859,9 @@ export class AptevaClient {
         } catch (error) {
           if (closed) break;
           reportError(error);
+          if (this.appAuth && error instanceof AptevaError && (error.status === 401 || error.status === 403)) close();
         } finally {
+          if (expiryTimer) clearTimeout(expiryTimer);
           if (reader) {
             try { await reader.cancel(); } catch { /* network already closed */ }
             reader.releaseLock(); reader = undefined;
@@ -831,7 +871,7 @@ export class AptevaClient {
         if (!closed) await waitToReconnect();
       }
     };
-    void run();
+    void run().finally(() => detachAuth?.());
     return { close };
   }
 
@@ -866,11 +906,11 @@ export class AptevaClient {
   }
 
   private bearerToken(): string | undefined {
-    return this.accessToken || this.apiKey;
+    return this.appAuth ? this.accessToken : this.accessToken || this.apiKey;
   }
 
   private isAccessTokenCredential(): boolean {
-    return Boolean(this.accessToken) || Boolean(this.apiKey?.startsWith("uk_"));
+    return Boolean(this.appAuth) || Boolean(this.accessToken) || Boolean(this.apiKey?.startsWith("uk_"));
   }
 
   private async request<R>(
@@ -879,6 +919,12 @@ export class AptevaClient {
     body: unknown,
     init?: RequestInit,
   ): Promise<R> {
+    if (this.appAuth) {
+      if (path.startsWith("/api/auth/")) throw new AptevaError(403, "Platform administrator auth is unavailable in app Auth mode");
+      if (["api_key", "access_token"].some(key => new URL(path, "http://_").searchParams.has(key))) throw new AptevaError(403, "Auth mode does not accept URL credentials");
+      if (new Headers(init?.headers).has("Authorization")) throw new AptevaError(403, "Auth mode does not accept credential overrides");
+      await this.appAuth.token();
+    }
     const url = this.baseURL + path;
     const revision = this.credentialRevision;
     const headers = new Headers(init?.headers);
@@ -904,6 +950,7 @@ export class AptevaClient {
         method,
         credentials: this.isAccessTokenCredential() ? "omit" : "include",
         ...init,
+        ...(this.appAuth ? { credentials: "omit" as const, redirect: "error" as const } : {}),
         headers,
         body: body === undefined ? init?.body : JSON.stringify(body),
         signal: ac?.signal ?? init?.signal,
@@ -911,8 +958,8 @@ export class AptevaClient {
       if (res.status === 401) {
         const text = await readBody(res);
         // Renew for subsequent calls, but never replay an HTTP operation.
-        if (!new Headers(init?.headers).has("Authorization")) await this.renewAfterUnauthorized(revision);
-        this.onUnauthorized?.();
+        const renewed = !new Headers(init?.headers).has("Authorization") && await this.renewAfterUnauthorized(revision);
+        if (!this.appAuth || !renewed) this.onUnauthorized?.();
         throw new AptevaError(401, text || "unauthorized");
       }
       if (!res.ok) {

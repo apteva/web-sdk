@@ -75,3 +75,5 @@ export type { SSEEventMetadata } from "./types.js";
 
 export { loadAppFrontend } from "./frontend.js";
 export type { AppFrontendManifest, FrontendAsset, LoadAppOptions, LoadedAppFrontend } from "./frontend.js";
+
+export type { AppAuthOptions, AuthLoginInput, AuthSignupInput, AuthUser, AuthAuthorization, AuthSessionInfo } from "./auth-session.js";
