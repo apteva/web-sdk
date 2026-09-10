@@ -1,3 +1,15 @@
+## Unreleased
+
+- Add generic opt-in managed Auth persistence (`auth.persistence: "local"`),
+  `auth.restore()`, credential-free restoration state, and `auth.dispose()`.
+- Persist only refresh credentials and versioned scope/session metadata. Keep
+  access tokens and authoritative identity/permissions in memory.
+- Coordinate same-origin tabs with Web Locks, notifications and durable refresh
+  markers; reject unsafe reuse after lost responses, crashes or uncertain commits.
+- Preserve memory-only defaults, explicit app credential selection and no write
+  replay. Browsers without Web Locks/storage use memory-only login.
+- No implicit legacy-format import; adoption requires one login.
+
 ## 0.9.0
 
 - Add `credential: "auth" | "platform"` to app handles, extensions and frontend

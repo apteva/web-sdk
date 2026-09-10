@@ -1,3 +1,4 @@
+import { SessionPersistence, PersistenceError, type StoredSession, type PersistenceEnvironment } from "./session-persistence.js";
 import type { AppCredential } from "./extensions.js";
 import { AptevaError } from "./errors.js";
 import type { User } from "./types.js";
@@ -22,6 +23,11 @@ export interface AuthSessionInfo {
   expiresAt: string;
   platformExpiresAt?: string;
 }
+export interface AuthState {
+  status: "idle" | "restoring" | "authenticated" | "unauthenticated" | "error";
+  persistence: "memory" | "local" | "unavailable";
+  error?: { code: string; message: string };
+}
 export interface AppAuthOptions {
   /** Public Auth app OAuth client identifier; never a private client secret. */
   clientId: string;
@@ -29,7 +35,11 @@ export interface AppAuthOptions {
   organizationSlug?: string;
   /** Requested Auth policy profile. Auth independently checks current roles. */
   profile?: string;
-  /** Receives user/session metadata, never credentials. Sessions are memory-only. */
+  /** Explicit opt-in. Local persistence requires browser storage and Web Locks. */
+  persistence?: "memory" | "local";
+  /** Restoration and persistence availability, without credentials. */
+  onStateChange?: (state: AuthState) => void;
+  /** Receives user/session metadata, never credentials. */
   onSessionChange?: (session: AuthSessionInfo | undefined) => void;
 }
 interface AuthResponse {
@@ -50,6 +60,11 @@ const margin = 10_000;
 /** Internal issuer-specific session lifecycle. AptevaClient is the public API. */
 export class AuthSession {
   private state?: State;
+  private persistence?: SessionPersistence;
+  private stored?: StoredSession;
+  private restoration?: Promise<AuthSessionInfo | undefined>;
+  private lifecycle: AuthState = { status: "unauthenticated", persistence: "memory" };
+  private disposed = false;
   private epoch = 0;
   private authRevision = 0;
   private platformRevision = 0;
@@ -63,10 +78,78 @@ export class AuthSession {
     private readonly options: AppAuthOptions,
     private readonly fetchImpl: typeof fetch,
     private readonly changed: (token: string | undefined) => void,
+    environment?: PersistenceEnvironment,
   ) {
+    if (options.persistence !== undefined && options.persistence !== "memory" && options.persistence !== "local") throw new Error("Invalid Auth persistence mode");
     if (!projectId || !options.clientId?.trim()) throw new Error("Auth requires projectId and auth.clientId");
     if (options.installId !== undefined && (!Number.isSafeInteger(options.installId) || options.installId < 1)) throw new Error("Invalid Auth installId");
+    if (options.persistence === "local") {
+      this.lifecycle = { status: "idle", persistence: "local" };
+      this.persistence = new SessionPersistence(baseURL, projectId, options, () => this.synchronize(), () => {
+        this.lifecycle.persistence = "unavailable"; this.emitState();
+      }, environment);
+      if (!this.persistence.enabled) this.lifecycle.status = "unauthenticated";
+    }
   }
+  getState(): AuthState { return structuredClone(this.lifecycle); }
+  private emitState(): void { try { this.options.onStateChange?.(this.getState()); } catch { /* Observer only. */ } }
+  private status(status: AuthState["status"], error?: unknown): void {
+    this.lifecycle = { status, persistence: this.lifecycle.persistence, ...(error ? { error: {
+      code: error instanceof PersistenceError ? error.code : error instanceof AptevaError ? `http_${error.status}` : "restoration_failed",
+      message: error instanceof PersistenceError ? error.message : "Session restoration failed",
+    } } : {}) }; this.emitState();
+  }
+  private synchronize(): void {
+    if (!this.persistence?.enabled || this.disposed) return;
+    try {
+      const record = this.persistence.read();
+      if (record?.generation === this.stored?.generation && record?.state !== "logged-out") {
+        if (record?.state === "active" && record.revision !== this.stored?.revision && this.state) {
+          this.authRevision++; this.platformRevision++;
+          this.state.expiresAt = 0; this.state.platformExpiresAt = 0;
+          this.state.response.apteva_access_token = undefined; this.changed(undefined);
+        }
+        return;
+      }
+      if (this.stored || this.state) { this.clear(); this.stored = undefined; }
+      this.status(record && record.state !== "logged-out" ? "idle" : "unauthenticated");
+    } catch (error) { this.clear(); this.status("error", error); }
+  }
+  private async ready(): Promise<void> {
+    if (this.disposed) throw new Error("Auth session disposed");
+    if (this.restoration) { await this.restoration; return; }
+    this.synchronize();
+    if (!this.state && this.lifecycle.status === "idle") await this.restore();
+    if (!this.state && this.lifecycle.status === "error") throw new PersistenceError(this.lifecycle.error?.code === "refresh_uncertain" ? "refresh_uncertain" : "invalid_storage", "Restore the session or log in before making requests");
+  }
+  restore(): Promise<AuthSessionInfo | undefined> {
+    if (this.disposed) return Promise.reject(new Error("Auth session disposed"));
+    if (this.restoration) return this.restoration;
+    if (!this.persistence?.enabled) return Promise.resolve(this.info());
+    this.synchronize();
+    if (this.state && this.lifecycle.status === "authenticated") return Promise.resolve(this.info());
+    const epoch = this.epoch;
+    this.status("restoring");
+    const pending = this.restoreSaved(epoch);
+    this.restoration = pending;
+    void pending.finally(() => { if (this.restoration === pending) this.restoration = undefined; }).catch(() => {});
+    return pending;
+  }
+  private async restoreSaved(epoch: number): Promise<AuthSessionInfo | undefined> {
+    try {
+      await this.persistence!.exclusive(async () => {
+        this.assertEpoch(epoch);
+        const record = this.persistence!.read();
+        if (!record || record.state === "logged-out") { this.status("unauthenticated"); return; }
+        await this.refreshSaved(record, epoch);
+      });
+      this.assertEpoch(epoch); return this.info();
+    } catch (error) {
+      if (this.epoch === epoch) this.status("error", error);
+      throw error;
+    }
+  }
+  dispose(): void { this.disposed = true; this.clear(); this.persistence?.dispose(); }
   info(): AuthSessionInfo | undefined {
     const s = this.state;
     return s ? structuredClone({ user: s.response.user, authorization: s.response.authorization,
@@ -82,6 +165,8 @@ export class AuthSession {
     this.state = undefined;
     this.pending = undefined;
     this.pendingAuth = undefined;
+    this.restoration = undefined;
+    this.status("unauthenticated");
     for (const controller of this.controllers) controller.abort();
     this.controllers.clear();
     this.changed(undefined);
@@ -102,7 +187,16 @@ export class AuthSession {
       const response = await this.fetchImpl(url.toString(), { method, credentials: "omit", cache: "no-store", redirect: "error",
         headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
         body: body === undefined ? undefined : JSON.stringify(body), signal: controller.signal });
-      if (!response.ok) throw new AptevaError(response.status, path + " failed");
+      if (!response.ok) {
+        let code: string | undefined;
+        if (path === "/refresh") {
+          try { const body = await response.json() as { error?: string }; if (["refresh_unavailable", "refresh_uncertain", "invalid_grant"].includes(body.error || "")) code = body.error; } catch { /* Legacy/gateway response. */ }
+        }
+        if (code === "refresh_uncertain") throw new PersistenceError("refresh_uncertain", "Refresh outcome is uncertain; login required");
+        const error = new AptevaError(response.status, path + " failed");
+        if (code === "refresh_unavailable") Object.assign(error, { safeRefreshRetry: true });
+        throw error;
+      }
       return response.status === 204 ? undefined as T : await response.json() as T;
     } finally { clearTimeout(timer); this.controllers.delete(controller); }
   }
@@ -118,9 +212,12 @@ export class AuthSession {
     if (typeof response.apteva_access_token !== "string" || !response.apteva_access_token || !Number.isFinite(expiresAt) || expiresAt > Date.now() + 61_000 || typeof seconds !== "number" || !Number.isFinite(seconds) || seconds <= 0 || seconds > 60) throw new AptevaError(502, "Invalid Auth platform credential expiry");
     return { token: response.apteva_access_token, expiresAt: Math.min(expiresAt, Date.now() + seconds * 1000) };
   }
+  private validateResponse(response: AuthResponse): void {
+    if (!response.user || !Number.isSafeInteger(response.user.id) || typeof response.access_token !== "string" || !response.access_token || typeof response.refresh_token !== "string" || !response.refresh_token || !Number.isFinite(response.expires_in) || response.expires_in <= 0 || response.expires_in > 86400) throw new AptevaError(502, "Invalid Auth session response");
+  }
   private accept(response: AuthResponse, epoch: number, receivedAt: number): void {
     this.assertEpoch(epoch);
-    if (!response.user || !Number.isSafeInteger(response.user.id) || typeof response.access_token !== "string" || !response.access_token || typeof response.refresh_token !== "string" || !response.refresh_token || !Number.isFinite(response.expires_in) || response.expires_in <= 0 || response.expires_in > 86400) throw new AptevaError(502, "Invalid Auth session response");
+    this.validateResponse(response);
     // Save a rotated refresh token before processing the optional platform
     // credential, so a platform outage can never strand the Auth session.
     this.authRevision++; this.platformRevision++;
@@ -131,24 +228,99 @@ export class AuthSession {
       this.state.response.apteva_access_token = platform.token;
       this.state.platformExpiresAt = platform.expiresAt;
       this.changed(platform.token);
-    } finally { this.notify(); }
+    } finally { this.status("authenticated"); this.notify(); }
   }
-  async login(input: AuthLoginInput): Promise<AuthUser> {
+  private async establish(path: string, input: object): Promise<AuthResponse> {
+    if (this.disposed) throw new Error("Auth session disposed");
     this.clear(); const epoch = this.epoch;
-    const response = await this.call<AuthResponse>("/login", this.input(input));
-    this.accept(response, epoch, Date.now()); return response.user;
+    const establish = async () => {
+      this.assertEpoch(epoch);
+      if (this.persistence?.enabled) {
+        this.stored = this.persistence.record("logged-out");
+        try { this.persistence.write(this.stored); } catch { /* A new login can be memory-only. */ }
+      }
+      const response = await this.call<AuthResponse>(path, this.input(input));
+      this.assertEpoch(epoch);
+      if (!response.verification_required) {
+        this.validateResponse(response);
+        if (this.persistence?.enabled) {
+          this.stored = this.persistence.record("active", this.stored!.generation, response.refresh_token);
+          try { this.persistence.write(this.stored); } catch { /* New credential stays in memory. */ }
+        }
+        this.accept(response, epoch, Date.now());
+      }
+      return response;
+    };
+    if (!this.persistence?.enabled) return establish();
+    try { return await this.persistence.exclusive(establish); }
+    catch (error) {
+      // A rejected Web Lock request never entered establish(). A fresh login
+      // can therefore safely create an independent memory-only session.
+      if (error instanceof PersistenceError && error.code === "persistence_unavailable" && !this.persistence.enabled && this.epoch === epoch) return establish();
+      throw error;
+    }
   }
+  async login(input: AuthLoginInput): Promise<AuthUser> { return (await this.establish("/login", input)).user; }
   async register(input: AuthSignupInput): Promise<{ user: AuthUser; verification_required?: boolean }> {
-    this.clear(); const epoch = this.epoch;
-    const response = await this.call<AuthResponse>("/signup", this.input({ email: input.email, password: input.password, display_name: input.displayName }));
-    this.assertEpoch(epoch);
-    if (!response.verification_required) this.accept(response, epoch, Date.now());
+    const response = await this.establish("/signup", { email: input.email, password: input.password, display_name: input.displayName });
     return { user: response.user, verification_required: response.verification_required };
   }
   async logout(): Promise<void> {
     const refresh = this.state?.response.refresh_token;
+    let generation = this.stored?.generation;
+    if (!generation && this.persistence?.enabled) {
+      try { generation = this.persistence.read()?.generation; } catch { /* The locked logout handles invalid/unavailable storage. */ }
+    }
     this.clear();
-    if (refresh) await this.call("/logout", this.input({ refresh_token: refresh }));
+    const logout = async () => {
+      let token = refresh;
+      if (this.persistence?.enabled) {
+        let record: StoredSession | undefined;
+        try { record = this.persistence.read(); }
+        catch (error) { if (!(error instanceof PersistenceError) || error.code !== "invalid_storage") throw error; }
+        // A queued logout from an older login must not clear a newer account.
+        if (record && record.generation !== generation) {
+          if (token) await this.call("/logout", this.input({ refresh_token: token }));
+          return;
+        }
+        token = record?.refreshToken || token;
+        this.stored = this.persistence.record("logged-out");
+        this.persistence.write(this.stored);
+      }
+      if (token) await this.call("/logout", this.input({ refresh_token: token }));
+    };
+    if (this.persistence?.enabled) await this.persistence.exclusive(logout); else await logout();
+  }
+  private async refreshSaved(record: StoredSession, epoch: number): Promise<void> {
+    const persistence = this.persistence!;
+    if (record.state !== "active" || !record.refreshToken) throw new PersistenceError("refresh_uncertain", "Previous refresh did not complete; login required");
+    // When the browser already reports offline, do not send or consume anything.
+    if (globalThis.navigator?.onLine === false) throw new AptevaError(0, "Browser offline; restoration can be retried");
+    const marker = persistence.record("refreshing", record.generation, record.refreshToken);
+    this.stored = marker;
+    // This durable marker must exist before a single-use credential is sent.
+    persistence.write(marker);
+    let response: AuthResponse;
+    try {
+      response = await this.call<AuthResponse>("/refresh", this.input({ refresh_token: record.refreshToken }));
+      this.validateResponse(response);
+    } catch (error) {
+      if (error instanceof AptevaError && error.status === 401) {
+        persistence.write(persistence.record("logged-out", record.generation));
+        if (this.epoch === epoch) this.clear();
+      } else if (error instanceof AptevaError && (error as AptevaError & { safeRefreshRetry?: boolean }).safeRefreshRetry) {
+        // Auth explicitly confirms that rotation did not commit.
+        persistence.write(record);
+      }
+      if (error instanceof AptevaError && (error.status === 401 || (error as AptevaError & { safeRefreshRetry?: boolean }).safeRefreshRetry)) throw error;
+      // Network failures and generic proxy 5xx responses can hide a committed
+      // rotation. Keep the marker; never replay that credential automatically.
+      throw new PersistenceError("refresh_uncertain", "Refresh outcome is uncertain; login required");
+    }
+    this.stored = persistence.record("active", record.generation, response.refresh_token);
+    try { persistence.write(this.stored); } catch { /* Marker prevents other tabs reusing the old token. Keep the replacement in memory. */ }
+    this.assertEpoch(epoch);
+    this.accept(response, epoch, Date.now());
   }
   private async refreshAuth(epoch: number): Promise<void> {
     if (this.pendingAuth) return this.pendingAuth;
@@ -157,6 +329,20 @@ export class AuthSession {
     try { await pending; } finally { if (this.pendingAuth === pending) this.pendingAuth = undefined; }
   }
   private async performAuthRefresh(epoch: number): Promise<void> {
+    if (this.persistence?.enabled) {
+      try { await this.persistence.exclusive(async () => {
+        this.assertEpoch(epoch);
+        const record = this.persistence!.read();
+        if (!record || record.state === "logged-out" || (this.stored && record.generation !== this.stored.generation)) {
+          this.clear(); throw new AptevaError(401, "Auth session changed");
+        }
+        await this.refreshSaved(record, epoch);
+      }); } catch (error) {
+        if (this.epoch === epoch) { this.clear(); this.status("error", error); }
+        throw error;
+      }
+      return;
+    }
     const refresh = this.state?.response.refresh_token;
     if (!refresh) throw new AptevaError(401, "Login required");
     try {
@@ -199,6 +385,7 @@ export class AuthSession {
     this.changed(platform.token); this.notify(); return platform.token;
   }
   async token(force = false): Promise<string> {
+    await this.ready();
     const epoch = this.epoch;
     if (this.pendingAuth) await this.pendingAuth;
     this.assertEpoch(epoch);
@@ -215,6 +402,7 @@ export class AuthSession {
     try { return await pending; } finally { if (this.pending === pending) this.pending = undefined; }
   }
   async me(): Promise<AuthUser> {
+    await this.ready();
     if (!this.state) throw new AptevaError(401, "Login required");
     const epoch = this.epoch;
     if (this.state.expiresAt <= Date.now() + margin) await this.refreshAuth(epoch);
@@ -234,6 +422,7 @@ export class AuthSession {
     this.notify(); return response.user;
   }
   async credential(kind: AppCredential): Promise<SessionCredential> {
+    await this.ready();
     const epoch = this.epoch;
     for (;;) {
       if (!this.state) throw new AptevaError(401, "Login required");

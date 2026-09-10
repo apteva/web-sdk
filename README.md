@@ -620,11 +620,9 @@ reconnect at token expiry and close on local logout. SDK stream reconnection is
 not server-side revocation: already-admitted work or a modified client may outlive
 token expiry unless the receiving app enforces its own lifetime.
 
-Sessions are kept **in memory**, not written to localStorage, sessionStorage or
-cookies. Reuse one client per application session. Reloads/new tabs require
-login and do not implicitly share a rotating refresh credential. Do not copy
-refresh tokens between clients/tabs. This release deliberately does not provide
-persistent/shared browser sessions.
+Sessions default to **memory-only**. Reuse one client per application session.
+Reloads/new tabs require login unless the host explicitly enables persistent
+sessions as described below. Do not manage or copy refresh credentials yourself.
 
 `auth` mode cannot be combined with `apiKey`, `accessToken` or
 `refreshAccessToken`; `setApiKey` and `setAccessToken` are unavailable in this
@@ -659,3 +657,102 @@ local fixture servers. The platform mint API and protected Conversations gateway
 are simulated. It verifies routing, role downgrade, and server-side session
 revocation without accessing live accounts or carriers. Set `SDK_TEST_MODULE` to
 an unpacked package's `dist/index.js` to check the release artifact.
+
+
+## Optional persistent Auth sessions
+
+Persistence is application-independent and opt-in. It uses the same managed Auth
+session as HTTP, MCP, frontend loaders and streams; app credential selection does
+not change. No customer-specific storage key, legacy session format or routing is
+built into the SDK.
+
+```ts
+const client = new AptevaClient({
+  baseURL,
+  projectId,
+  auth: {
+    clientId,
+    persistence: "local", // default: "memory"
+    onStateChange: state => renderSessionState(state),
+    onSessionChange: session => renderUser(session?.user),
+  },
+});
+
+try {
+  await client.auth.restore();
+} catch {
+  // Show a retry action or login, according to client.auth.getState().
+}
+
+const crm = client.app("api", { credential: "auth" });
+const conversations = client.app("conversations", { credential: "platform" });
+```
+
+`auth.getState()` reports `status` (`idle`, `restoring`, `authenticated`,
+`unauthenticated`, or `error`), effective `persistence` (`memory`, `local`, or
+`unavailable`) and optional credential-free error metadata. Render loading for
+`idle`/`restoring`, rather than briefly displaying the login screen. Concurrent
+`restore()` calls share one promise. Protected requests await pending restoration
+and can start initial restoration themselves. After a restoration error, retry
+explicitly with `restore()` or log in; requests do not repeatedly retry it.
+
+Only the refresh credential, format version, configuration scope and locally
+generated session/revision identifiers are persisted in localStorage. Normal Auth
+and platform access tokens, user details and permissions stay in memory. The
+`/refresh` response supplies the authoritative user and authorization context.
+`getSession()`, `getState()`, callbacks and cross-tab notifications expose no
+credentials. Browser storage is JavaScript-readable: enabling it deliberately
+accepts the same-origin script/XSS exposure of a persisted refresh credential.
+
+Storage and lock namespaces include the canonical server URL, project, Auth
+installation (or automatic routing), organization, public client and profile.
+Use consistent configuration across tabs that should share a session. Cross-tab
+sharing is limited to the same browser origin and storage partition. Different
+scopes do not import each other's credentials or identities.
+
+Native Web Locks serialize login, restore, refresh and logout. Each refresh reads
+the latest saved credential under the lock, writes an in-progress marker before
+sending it, then saves the replacement before releasing the lock. Other tabs are
+notified without broadcasting credentials. Switching accounts invalidates the
+previous local session and closes its streams. Disposed clients release browser
+listeners and local streams through `client.auth.dispose()` without revoking or
+deleting the saved session.
+
+If localStorage or Web Locks are unavailable, `persistence` reports `unavailable`
+and a fresh login works in memory-only mode. There is no localStorage-based lock
+fallback. If saving a rotated credential fails, the replacement remains in memory
+and the durable in-progress marker prevents other tabs from reusing the old one.
+A failure reading previously shared credentials requires a new login; the SDK
+cannot safely promote a potentially stale in-memory refresh to an independent
+session.
+
+Logout clears local credentials and streams immediately. It then clears the
+saved refresh credential under the shared lock, notifies other tabs, and asks
+Auth to revoke the session. A failed network logout still rejects: local logout
+does not guarantee server-side revocation while offline. Late refresh results
+cannot replace a newer login or resurrect a completed logout.
+
+Restoration failure handling:
+
+| Result | SDK behavior |
+| --- | --- |
+| Auth rejects an invalid/revoked refresh with 401 | Clear the saved and local session; login is required. |
+| Browser is already offline before sending | Preserve the saved credential; retry restoration when connected. |
+| Auth returns `refresh_unavailable` with 503 | Auth confirms rotation did not commit; preserve the credential for explicit retry. |
+| Network failure, generic proxy 5xx, malformed response, or `refresh_uncertain` | Preserve an uncertain marker; do not reuse the old credential. If no replacement was saved, require login. |
+| Platform mint denied | Restore the Auth session; platform-protected access remains blocked. |
+| Unsupported or malformed storage format | Fail closed; login or logout replaces the record. |
+
+The explicit retry-safe and uncertain response codes require the accompanying
+Auth refresh-error classification fix. With older Auth versions, generic errors
+are handled conservatively. A tab crash after server rotation but before saving
+the response cannot be recovered transparently with single-use refresh tokens.
+
+There is no automatic legacy-session migration. Existing customer storage is not
+read or deleted; hosts should remove their old refresh loops and require one
+login when adopting persistence. Any future import must be a separate explicit,
+tested SDK API. HTTP writes are never replayed automatically after a 401.
+
+Validate native browser behavior with `bunx playwright install chromium` followed
+by `bun run test:persistence:browser`. These checks use isolated local fixtures,
+real tabs, Web Locks and localStorage; they do not contact customer accounts.

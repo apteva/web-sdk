@@ -47,11 +47,13 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "test": "bun test",
+    "test:persistence:browser": "bun scripts/test-persistence-browser.ts",
     "test:mixed-apps": "bun scripts/test-mixed-apps.ts",
     "typecheck": "tsc --noEmit",
     "prepublishOnly": "bun run typecheck && bun test && bun run build"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@types/bun": "^1.1.0",
     "typescript": "^5.4.0"
   }

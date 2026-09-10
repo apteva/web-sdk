@@ -162,6 +162,16 @@ export class AptevaClient {
 
     getSession: () => this.appAuth?.info(),
 
+    getState: () => this.appAuth?.getState(),
+
+    restore: () => {
+      if (!this.appAuth) throw new Error("Session restoration requires auth configuration");
+      return this.appAuth.restore();
+    },
+
+    /** Release browser listeners and local streams without revoking the saved session. */
+    dispose: () => this.appAuth?.dispose(),
+
     refresh: async () => {
       if (!this.appAuth) throw new Error("Session refresh requires auth configuration");
       await this.appAuth.token(true); return this.appAuth.info();
