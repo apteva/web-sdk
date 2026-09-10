@@ -1,9 +1,13 @@
 import type { AppHandle } from "./client.js";
 
+export type AppCredential = "auth" | "platform";
+
 /** Routing context, never an identity or authorization decision. */
 export interface AppScope {
   projectId?: string;
   installId?: number;
+  /** Defaults to platform. Auth requires a managed login session. */
+  credential?: AppCredential;
 }
 
 /** Host-supplied context for app clients and app-owned UI components. */

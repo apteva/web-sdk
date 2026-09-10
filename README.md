@@ -557,7 +557,7 @@ bun run serve
 
 MIT
 
-## One client for Auth app sessions (v0.8.0)
+## One client for Auth app sessions (v0.9.0)
 
 With Auth app v0.12.0 or newer, configure `auth` and use the same client for
 login, app requests, agents and logout:
@@ -576,7 +576,17 @@ const apteva = new AptevaClient({
 });
 
 const user = await apteva.auth.login({ email, password });
-await apteva.app("conversations").get("/chats");
+const crm = apteva.app("api", { credential: "auth" });
+const conversations = apteva.app("conversations", { credential: "platform" });
+await crm.get("/YOUR_CRM_ROUTE");
+await conversations.get("/chats");
+
+const telephony = await apteva.apps.load("telephony", {
+  credential: "auth",
+  installId: YOUR_TELEPHONY_INSTALL_ID,
+  clientOptions: { authProvider: "YOUR_CONFIGURED_PROVIDER" },
+});
+// The loaded client keeps this Auth handle for /user/ calls and subscriptions.
 await apteva.auth.logout();
 ```
 
@@ -588,15 +598,22 @@ metadata without credentials. `auth.status()` reports local session presence.
 `auth.refresh()` explicitly requests a fresh platform credential when needed.
 
 Auth owns identity and authorization. Configure its trusted role bindings and
-matching platform policies with `token_ttl_seconds: 60` before enabling protected
-app access. Login can succeed without app permissions; app calls then fail closed
-until an authorized policy can mint a token. A requested profile never grants a
+matching platform policies with `token_ttl_seconds: 60` before enabling platform
+app access. Login can succeed without platform permissions; platform calls fail
+closed until an authorized policy can mint a token. Auth-credential routes remain
+available according to their own current user permissions. A requested profile never grants a
 role. The SDK does not infer permissions or mint credentials itself.
 
 The SDK privately maintains the normal Auth session plus its short-lived
-platform token. Before an app request it renews a platform token that is within
-ten seconds of expiry. Expired/stale Auth credentials use the normal refresh
-flow. Concurrent operations share renewal and refresh-token rotation; no custom
+platform token. Choose `credential: "auth"` for API Auth-policy routes and
+Telephony `/user/` routes; choose `"platform"` for Conversations. Omitted choices
+default to `"platform"`. The choice applies to every HTTP method, MCP tool and
+subscription on that handle, and to `client.use` and `client.apps.load`. Loaded
+frontend assets and the resulting app client share the selected handle.
+
+Before a request, the SDK renews the selected credential when it is within ten
+seconds of expiry. Auth tokens use the normal Auth refresh flow; platform tokens
+use `/delegated-token`. Auth requests do not require a working mint policy. Concurrent operations share renewal and refresh-token rotation; no custom
 refresh callback or application token endpoint is required. Both the returned
 absolute expiry and remaining lifetime limit credential use. Fetch streams
 reconnect at token expiry and close on local logout. SDK stream reconnection is
@@ -611,17 +628,34 @@ persistent/shared browser sessions.
 
 `auth` mode cannot be combined with `apiKey`, `accessToken` or
 `refreshAccessToken`; `setApiKey` and `setAccessToken` are unavailable in this
-mode. User requests omit cookies and never fall back to a kiosk or administrator
+mode. `getAccessToken()` now returns `undefined` in managed mode: use scoped
+handles instead of extracting either credential. Host-owned opaque tokens retain
+the existing getter behavior. Auth handles cannot change the configured project
+or escape their app routes; credentials are never forwarded through redirects
+or accepted from URL parameters or header overrides.
+
+User requests omit cookies and never fall back to a kiosk or administrator
 credential. Platform administrator operations such as `auth.listKeys()` are
 rejected in app Auth mode. Without `auth` configuration, existing platform
 login and opaque-token APIs retain their original behavior.
 
-A temporary mint failure preserves the normal Auth session and blocks protected
-app requests. A rejected Auth refresh clears the session. Local logout clears
+A temporary mint failure preserves the normal Auth session and blocks only
+platform-credential requests. Credential types never switch after an error. A rejected Auth refresh clears the session. Local logout clears
 credentials and streams immediately; a failed network logout still throws so the
 host can report that server-side revocation could not be confirmed. A late
 renewal cannot restore a logged-out session. HTTP writes are never automatically
 replayed after a 401; successful renewal prepares subsequent calls. Unlike legacy
-transport mode, a successfully recovered platform 401 does not trigger the
+transport mode, a successfully recovered 401 does not trigger the
 `onUnauthorized` callback in managed Auth mode, although the original call still
 rejects. Reconcile a write's outcome before retrying it.
+
+
+### Mixed-app integration check
+
+Run `APTEVA_APPS_DIR=/path/to/apps bun run test:mixed-apps` with a compatible Go
+compiler (`GO_BINARY` can select it). This uses real Auth handlers, API's
+`auth_jwt` validator and Telephony's `/user/` handler, temporary databases and
+local fixture servers. The platform mint API and protected Conversations gateway
+are simulated. It verifies routing, role downgrade, and server-side session
+revocation without accessing live accounts or carriers. Set `SDK_TEST_MODULE` to
+an unpacked package's `dist/index.js` to check the release artifact.

@@ -56,6 +56,9 @@ export function startStubServer(initial?: Record<string, RouteHandler>): StubSer
   );
 
   const server = serve({
+    // Bind the same interface used by callers; wildcard listeners can overlap
+    // loopback-only local sidecars using reusable ephemeral ports on macOS.
+    hostname: "127.0.0.1",
     port: 0,
     fetch: async (req): Promise<Response> => {
       const url = new URL(req.url);

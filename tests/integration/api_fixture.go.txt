@@ -1,0 +1,24 @@
+package main
+
+import (
+ "encoding/json"
+ "net/http"
+ "net/http/httptest"
+ "os"
+ "testing"
+ "time"
+)
+
+// Loaded with go -overlay; exercises API's production auth_jwt validator.
+func TestSDKMixedFixture(t *testing.T) {
+ app := &App{httpClient: &http.Client{Timeout: 5*time.Second}}
+ server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+  subject, err := app.verifyAuthJWT(r, "test-proj")
+  if err != nil { http.Error(w, err.Error(), 401); return }
+  w.Header().Set("Content-Type", "application/json")
+  json.NewEncoder(w).Encode(map[string]any{"subject":subject})
+ }))
+ defer server.Close()
+ if err := os.WriteFile(os.Getenv("SDK_FIXTURE_READY"), []byte(server.URL), 0600); err != nil { t.Fatal(err) }
+ <-time.After(90*time.Second)
+}

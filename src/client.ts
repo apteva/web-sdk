@@ -1,8 +1,8 @@
 import { AuthSession } from "./auth-session.js";
-import type { AuthLoginInput, AuthSignupInput } from "./auth-session.js";
+import type { AuthLoginInput, AuthSignupInput, SessionCredential } from "./auth-session.js";
 import { loadAppFrontend, type LoadAppOptions, type LoadedAppFrontend } from "./frontend.js";
 import { AptevaError } from "./errors.js";
-import type { AppExtension, AppScope } from "./extensions.js";
+import type { AppExtension, AppScope, AppCredential } from "./extensions.js";
 import type { InstalledApp } from "./apps.js";
 import type {
   Agent,
@@ -102,8 +102,9 @@ export class AptevaClient {
     this.credentialRevision++;
   }
 
+  /** Host-owned opaque token only; managed Auth credentials remain internal. */
   getAccessToken(): string | undefined {
-    return this.accessToken;
+    return this.appAuth ? undefined : this.accessToken;
   }
 
   /** Refresh once for concurrent callers. Undefined leaves credentials unchanged. */
@@ -127,9 +128,10 @@ export class AptevaClient {
     }
   }
 
-  private async renewAfterUnauthorized(revision: number): Promise<boolean> {
-    if (revision !== this.credentialRevision) return Boolean(this.bearerToken());
+  private async renewAfterUnauthorized(revision: number, credential: AppCredential = "platform", used?: SessionCredential): Promise<boolean> {
     try {
+      if (this.appAuth) return used ? await this.appAuth.recover(credential, used) : false;
+      if (revision !== this.credentialRevision) return Boolean(this.bearerToken());
       return await this.refreshAccessToken();
     } catch {
       // Preserve the original 401; callers can observe refresh errors by
@@ -503,7 +505,12 @@ export class AptevaClient {
   // type for typed route helpers — defaults to unknown so callers
   // either pass a per-call generic or stick to `unknown`.
   app<T = unknown>(name: string, scope: AppScope = {}): AppHandle<T> {
+    const credential = scope.credential ?? "platform";
+    if (credential !== "auth" && credential !== "platform") throw new AptevaError(0, "Invalid app credential");
+    if (credential === "auth" && !this.appAuth) throw new AptevaError(0, "Auth credential requires auth configuration");
+    if (this.appAuth && !/^[a-zA-Z0-9_-]+$/.test(name)) throw new AptevaError(0, "Invalid app name");
     const explicitProjectId = scope.projectId?.trim();
+    if (this.appAuth && explicitProjectId && explicitProjectId !== this.projectId) throw new AptevaError(403, "Auth project cannot be overridden");
     const projectId = explicitProjectId || this.projectId;
     const installId = scope.installId;
     if (installId !== undefined && (!Number.isSafeInteger(installId) || installId <= 0)) {
@@ -514,38 +521,41 @@ export class AptevaClient {
       if (!path.startsWith("/") || path.startsWith("//")) {
         throw new AptevaError(0, "app paths must start with a single slash");
       }
+      if (this.appAuth && /\\|%(?:2f|5c|25)/i.test(path.split(/[?#]/)[0])) throw new AptevaError(403, "Encoded app path separators are unavailable in Auth mode");
       const url = new URL(base + path, "http://_");
       if (!url.pathname.startsWith(base + "/")) {
         throw new AptevaError(0, "app path must stay within the app");
       }
       // An explicit handle scope wins over per-request query parameters.
       // Preserve legacy query overrides when only the client default is set.
-      if (explicitProjectId) url.searchParams.set("project_id", projectId!);
+      if (this.appAuth && url.searchParams.has("project_id") && url.searchParams.get("project_id") !== projectId) throw new AptevaError(403, "Auth project cannot be overridden");
+      if (explicitProjectId || this.appAuth) url.searchParams.set("project_id", projectId!);
       else if (projectId && !url.searchParams.has("project_id")) url.searchParams.set("project_id", projectId);
       if (installId !== undefined) url.searchParams.set("install_id", String(installId));
       return url.pathname + url.search;
     };
     return {
       name,
+      credential,
       projectId,
       installId,
-      get: <R = T>(path: string, init?: RequestInit) => this.get<R>(scopedPath(path), init),
+      get: <R = T>(path: string, init?: RequestInit) => this.request<R>("GET", scopedPath(path), undefined, init, credential),
       post: <R = T>(path: string, body?: unknown, init?: RequestInit) =>
-        this.post<R>(scopedPath(path), body, init),
+        this.request<R>("POST", scopedPath(path), body, init, credential),
       put: <R = T>(path: string, body?: unknown, init?: RequestInit) =>
-        this.put<R>(scopedPath(path), body, init),
+        this.request<R>("PUT", scopedPath(path), body, init, credential),
       patch: <R = T>(path: string, body?: unknown, init?: RequestInit) =>
-        this.patch<R>(scopedPath(path), body, init),
-      del: <R = T>(path: string, init?: RequestInit) => this.del<R>(scopedPath(path), init),
+        this.request<R>("PATCH", scopedPath(path), body, init, credential),
+      del: <R = T>(path: string, init?: RequestInit) => this.request<R>("DELETE", scopedPath(path), undefined, init, credential),
       tool: async <R = T>(toolName: string, args: Record<string, unknown> = {}, init?: RequestInit) => {
-        const env = await this.post<MCPCallResponse<unknown>>(scopedPath("/mcp"), {
+        const env = await this.request<MCPCallResponse<unknown>>("POST", scopedPath("/mcp"), {
           jsonrpc: "2.0", id: 1, method: "tools/call",
           params: { name: toolName, arguments: args },
-        }, init);
+        }, init, credential);
         return unwrapMCP<R>(env);
       },
       subscribe: <E>(path: string, onEvent: (event: E, metadata: SSEEventMetadata) => void, opts?: SubscribeOptions) =>
-        this.subscribe<E>(scopedPath(path), undefined, onEvent, opts),
+        this.subscribeScoped<E>(scopedPath(path), undefined, onEvent, opts, credential),
       mcpURL: (queryParams?: Record<string, string>) => {
         const url = new URL(scopedPath("/mcp"), "http://_");
         for (const [key, value] of Object.entries(queryParams ?? {})) url.searchParams.set(key, value);
@@ -643,6 +653,12 @@ export class AptevaClient {
     onEvent: (event: E, metadata: SSEEventMetadata) => void,
     opts?: SubscribeOptions,
   ): StreamHandle {
+    return this.subscribeScoped(path, params, onEvent, opts);
+  }
+
+  private subscribeScoped<E>(path: string, params: Record<string, string | number | undefined> | undefined,
+    onEvent: (event: E, metadata: SSEEventMetadata) => void, opts?: SubscribeOptions, credential: AppCredential = "platform",
+  ): StreamHandle {
     if (opts?.signal?.aborted) return { close() {} };
     if (opts?.reconnectDelayMs !== undefined && (!Number.isFinite(opts.reconnectDelayMs) || opts.reconnectDelayMs < 0)) {
       throw new AptevaError(0, "reconnectDelayMs must be a non-negative finite number");
@@ -665,7 +681,7 @@ export class AptevaClient {
     if (this.appAuth || opts?.transport === "fetch" || opts?.lastEventId !== undefined || opts?.cursorParam ||
         opts?.deduplicate || opts?.reconnectDelayMs !== undefined ||
         (bearerToken && (this.isAccessTokenCredential() || !opts?.EventSource))) {
-      return this.bindAbortSignal(this.subscribeWithFetch(path, params, onEvent, opts), opts?.signal);
+      return this.bindAbortSignal(this.subscribeWithFetch(path, params, onEvent, opts, credential), opts?.signal);
     }
 
     const Ctor: EventSourceCtor | undefined =
@@ -722,6 +738,7 @@ export class AptevaClient {
     params: Record<string, string | number | undefined> | undefined,
     onEvent: (event: E, metadata: SSEEventMetadata) => void,
     opts?: SubscribeOptions,
+    credential: AppCredential = "platform",
   ): StreamHandle {
     let closed = false;
     let controller: AbortController | undefined;
@@ -755,14 +772,15 @@ export class AptevaClient {
     const run = async () => {
       while (!closed) {
         controller = new AbortController();
-        let revision = this.credentialRevision;
+        const revision = this.credentialRevision;
+        let used: SessionCredential | undefined;
         let expiryTimer: ReturnType<typeof setTimeout> | undefined;
         try {
           if (this.appAuth) {
-            await this.appAuth.token();
+            this.validateManagedPath(path, credential);
+            used = await this.appAuth.credential(credential);
             if (closed) break;
-            revision = this.credentialRevision;
-            const deadline = this.appAuth.platformDeadline();
+            const deadline = used.deadline;
             expiryTimer = setTimeout(() => controller?.abort(), Math.max(1, deadline - Date.now()));
           }
           const url = new URL(this.baseURL + path, "http://_");
@@ -770,9 +788,10 @@ export class AptevaClient {
             if (value !== undefined && value !== "") url.searchParams.set(key, String(value));
           }
           if (opts?.cursorParam && lastEventId) url.searchParams.set(opts.cursorParam, lastEventId);
+          if (this.appAuth) this.validateManagedPath(url.pathname + url.search, credential);
           if (this.appAuth && ["api_key", "access_token"].some(key => url.searchParams.has(key))) throw new AptevaError(403, "Auth mode does not accept URL credentials");
           const headers = new Headers({ Accept: "text/event-stream" });
-          const bearerToken = this.bearerToken();
+          const bearerToken = used?.token ?? this.bearerToken();
           if (bearerToken) headers.set("Authorization", `Bearer ${bearerToken}`);
           if (lastEventId) headers.set("Last-Event-ID", lastEventId);
           const response = await this.fetchImpl(this.baseURL + url.pathname + url.search, {
@@ -785,7 +804,7 @@ export class AptevaClient {
           if (!response.ok) {
             await response.body?.cancel();
             if (response.status === 401) {
-              const renewed = !renewedSinceOpen && await this.renewAfterUnauthorized(revision);
+              const renewed = !renewedSinceOpen && await this.renewAfterUnauthorized(revision, credential, used);
               renewedSinceOpen = renewed;
               if (closed) break;
               if (!this.appAuth || !renewed) this.onUnauthorized?.();
@@ -905,6 +924,13 @@ export class AptevaClient {
     return url.pathname + url.search + url.hash;
   }
 
+  private validateManagedPath(path: string, credential: AppCredential): void {
+    if (!path.startsWith("/") || path.startsWith("//") || /\\|%(?:2f|5c|25)/i.test(path.split(/[?#]/)[0])) throw new AptevaError(403, "Auth requires a local server route");
+    const url = new URL(path, "http://_");
+    if (url.pathname.startsWith("/api/auth/") || (credential === "auth" && !/^\/api\/apps\/[a-zA-Z0-9_-]+\//.test(url.pathname))) throw new AptevaError(403, "Credential unavailable for this route");
+    if (url.searchParams.has("project_id") && url.searchParams.get("project_id") !== this.projectId) throw new AptevaError(403, "Auth project cannot be overridden");
+  }
+
   private bearerToken(): string | undefined {
     return this.appAuth ? this.accessToken : this.accessToken || this.apiKey;
   }
@@ -918,12 +944,15 @@ export class AptevaClient {
     path: string,
     body: unknown,
     init?: RequestInit,
+    credential: AppCredential = "platform",
   ): Promise<R> {
+    let used: SessionCredential | undefined;
     if (this.appAuth) {
+      this.validateManagedPath(path, credential);
       if (path.startsWith("/api/auth/")) throw new AptevaError(403, "Platform administrator auth is unavailable in app Auth mode");
       if (["api_key", "access_token"].some(key => new URL(path, "http://_").searchParams.has(key))) throw new AptevaError(403, "Auth mode does not accept URL credentials");
       if (new Headers(init?.headers).has("Authorization")) throw new AptevaError(403, "Auth mode does not accept credential overrides");
-      await this.appAuth.token();
+      used = await this.appAuth.credential(credential);
     }
     const url = this.baseURL + path;
     const revision = this.credentialRevision;
@@ -932,7 +961,7 @@ export class AptevaClient {
     if (body !== undefined && !headers.has("Content-Type")) {
       headers.set("Content-Type", "application/json");
     }
-    const bearerToken = this.bearerToken();
+    const bearerToken = used?.token ?? this.bearerToken();
     if (bearerToken && !headers.has("Authorization")) {
       headers.set("Authorization", `Bearer ${bearerToken}`);
     }
@@ -958,7 +987,7 @@ export class AptevaClient {
       if (res.status === 401) {
         const text = await readBody(res);
         // Renew for subsequent calls, but never replay an HTTP operation.
-        const renewed = !new Headers(init?.headers).has("Authorization") && await this.renewAfterUnauthorized(revision);
+        const renewed = !new Headers(init?.headers).has("Authorization") && await this.renewAfterUnauthorized(revision, credential, used);
         if (!this.appAuth || !renewed) this.onUnauthorized?.();
         throw new AptevaError(401, text || "unauthorized");
       }
@@ -1018,6 +1047,7 @@ export interface AppHandle<TDefault = unknown> {
   readonly name: string;
   readonly projectId?: string;
   readonly installId?: number;
+  readonly credential?: AppCredential;
   get<R = TDefault>(path: string, init?: RequestInit): Promise<R>;
   post<R = TDefault>(path: string, body?: unknown, init?: RequestInit): Promise<R>;
   put<R = TDefault>(path: string, body?: unknown, init?: RequestInit): Promise<R>;

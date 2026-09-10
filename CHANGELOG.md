@@ -1,3 +1,20 @@
+## 0.9.0
+
+- Add `credential: "auth" | "platform"` to app handles, extensions and frontend
+  loaders. HTTP, MCP and SSE use the selected credential within one managed session.
+- Refresh Auth and platform credentials independently with shared renewal across
+  handles. Auth routes remain usable when platform minting is unavailable.
+- Prevent stale mints and old-session 401s from overwriting a newer session.
+  Both stream types reconnect at their credential expiry and close on logout or
+  detected session revocation. No credential fallback or HTTP replay after a 401.
+- Restrict managed forwarding to the configured server, project and scoped app
+  routes; reject escaped paths, URL credentials, header overrides and redirects.
+- Managed `getAccessToken()` now returns `undefined`; use app handles instead.
+  Host-owned opaque-token transport retains its existing behavior.
+- Add mixed-session regression tests and an opt-in integration harness using real
+  Auth, API and Telephony handlers. Platform mint/Conversations gateway are fixtures.
+- Requires Auth v0.12.0 or newer. No additional Auth or server release required.
+
 ## 0.8.0
 
 - Add unified Auth app login/signup, user lookup, session metadata, automatic

@@ -1,0 +1,30 @@
+package main
+
+import (
+ "bytes"
+ "encoding/json"
+ "net/http"
+ "net/http/httptest"
+ "os"
+ "testing"
+ "time"
+ tk "github.com/apteva/app-sdk/testkit"
+)
+
+// Calls the production /user handler and real Auth /me; never contacts a carrier.
+func TestSDKMixedFixture(t *testing.T) {
+ ctx := tk.NewAppCtx(t, "apteva.yaml", tk.WithProjectID("test-proj"))
+ previous := globalCtx; globalCtx = ctx; defer func(){globalCtx = previous}()
+ app := &App{installID:42}
+ policy := phonePolicy{Users: []phoneUser{{Identity: phoneIdentity{"auth","11","user",os.Getenv("SDK_FIXTURE_USER"),os.Getenv("SDK_FIXTURE_ORG")}, Enabled:true, phoneGrant:phoneGrant{Role:"user"}}},
+  Providers: []phoneAuthProvider{{ID:"login",IssuerApp:"auth",IssuerInstallID:"11",URL:os.Getenv("APTEVA_GATEWAY_URL")+"/api/apps/auth/me?project_id=test-proj",Format:"apteva-auth",Actions:[]string{"call.read"}}}}
+ body, _ := json.Marshal(policy)
+ req := httptest.NewRequest("PUT","/access/policy?project_id=test-proj",bytes.NewReader(body))
+ mux := http.NewServeMux()
+ for _, route := range app.HTTPRoutes() { mux.HandleFunc(route.Pattern,route.Handler) }
+ w := httptest.NewRecorder(); mux.ServeHTTP(w,req)
+ if w.Code != 200 { t.Fatalf("policy: %d %s",w.Code,w.Body) }
+ server := httptest.NewServer(http.HandlerFunc(app.handleApplicationSession)); defer server.Close()
+ if err := os.WriteFile(os.Getenv("SDK_FIXTURE_READY"), []byte(server.URL),0600); err != nil {t.Fatal(err)}
+ <-time.After(90*time.Second)
+}

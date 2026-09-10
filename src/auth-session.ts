@@ -1,3 +1,4 @@
+import type { AppCredential } from "./extensions.js";
 import { AptevaError } from "./errors.js";
 import type { User } from "./types.js";
 
@@ -42,6 +43,7 @@ interface AuthResponse {
   apteva_expires_at?: string;
   verification_required?: boolean;
 }
+export interface SessionCredential { token: string; epoch: number; revision: number; deadline: number }
 interface State { response: AuthResponse; expiresAt: number; platformExpiresAt: number }
 const margin = 10_000;
 
@@ -49,6 +51,8 @@ const margin = 10_000;
 export class AuthSession {
   private state?: State;
   private epoch = 0;
+  private authRevision = 0;
+  private platformRevision = 0;
   private pending?: Promise<string>;
   private pendingAuth?: Promise<void>;
   private controllers = new Set<AbortController>();
@@ -119,6 +123,7 @@ export class AuthSession {
     if (!response.user || !Number.isSafeInteger(response.user.id) || typeof response.access_token !== "string" || !response.access_token || typeof response.refresh_token !== "string" || !response.refresh_token || !Number.isFinite(response.expires_in) || response.expires_in <= 0 || response.expires_in > 86400) throw new AptevaError(502, "Invalid Auth session response");
     // Save a rotated refresh token before processing the optional platform
     // credential, so a platform outage can never strand the Auth session.
+    this.authRevision++; this.platformRevision++;
     this.state = { response: { ...response, apteva_access_token: undefined, apteva_expires_at: undefined, apteva_expires_in: undefined }, expiresAt: receivedAt + response.expires_in * 1000, platformExpiresAt: 0 };
     this.changed(undefined);
     try {
@@ -168,6 +173,7 @@ export class AuthSession {
     if (this.state.expiresAt <= Date.now() + margin) await this.refreshAuth(epoch);
     this.assertEpoch(epoch);
     if (!force && this.state!.response.apteva_access_token && this.state!.platformExpiresAt > Date.now() + margin) return this.state!.response.apteva_access_token!;
+    let revision = this.authRevision;
     let result: Partial<AuthResponse>;
     try {
       result = await this.call<Partial<AuthResponse>>("/delegated-token", {}, this.state!.response.access_token);
@@ -175,25 +181,32 @@ export class AuthSession {
       this.assertEpoch(epoch);
       if (!(error instanceof AptevaError) || error.status !== 401) throw error;
       // Stale Auth roles or an expired Auth access token require normal refresh.
-      await this.refreshAuth(epoch);
+      if (revision === this.authRevision) await this.refreshAuth(epoch);
       this.assertEpoch(epoch);
+      revision = this.authRevision;
       if (this.state!.response.apteva_access_token && this.state!.platformExpiresAt > Date.now() + margin) return this.state!.response.apteva_access_token!;
       result = await this.call<Partial<AuthResponse>>("/delegated-token", {}, this.state!.response.access_token);
     }
+    if (this.pendingAuth) await this.pendingAuth;
     this.assertEpoch(epoch);
+    // A mint started under older Auth permissions must never win over refresh.
+    if (revision !== this.authRevision) return this.renew(epoch, false);
     const platform = this.platform(result);
     if (!platform.token || platform.expiresAt <= Date.now()) throw new AptevaError(502, "Missing or expired platform credential");
+    this.platformRevision++;
     this.state!.response.apteva_access_token = platform.token;
     this.state!.platformExpiresAt = platform.expiresAt;
     this.changed(platform.token); this.notify(); return platform.token;
   }
   async token(force = false): Promise<string> {
+    const epoch = this.epoch;
+    if (this.pendingAuth) await this.pendingAuth;
+    this.assertEpoch(epoch);
     if (this.pending) return this.pending;
     if (!force && this.state?.response.apteva_access_token && this.state.platformExpiresAt > Date.now() + margin) return this.state.response.apteva_access_token;
-    if (this.pending) return this.pending;
-    const epoch = this.epoch;
+    const revision = this.authRevision;
     const pending = this.renew(epoch, force).catch(error => {
-      if (this.epoch === epoch && this.state) {
+      if (this.epoch === epoch && this.authRevision === revision && this.state) {
         this.state.response.apteva_access_token = undefined; this.state.platformExpiresAt = 0; this.changed(undefined); this.notify();
       }
       throw error;
@@ -220,5 +233,31 @@ export class AuthSession {
     this.state!.response.user = response.user; this.state!.response.authorization = response.authorization;
     this.notify(); return response.user;
   }
-  platformDeadline(): number { return this.state?.platformExpiresAt || 0; }
+  async credential(kind: AppCredential): Promise<SessionCredential> {
+    const epoch = this.epoch;
+    for (;;) {
+      if (!this.state) throw new AptevaError(401, "Login required");
+      if (this.pendingAuth) await this.pendingAuth;
+      this.assertEpoch(epoch);
+      if (kind === "platform") await this.token();
+      else if (this.state!.expiresAt <= Date.now() + margin) await this.refreshAuth(epoch);
+      this.assertEpoch(epoch);
+      // A refresh can start while token() yields. Take one consistent snapshot
+      // only after rotation, including when the refreshed session has no mint.
+      if (this.pendingAuth) continue;
+      const token = kind === "auth" ? this.state!.response.access_token : this.state!.response.apteva_access_token;
+      if (!token) continue;
+      return { token, epoch, revision: kind === "auth" ? this.authRevision : this.platformRevision,
+        deadline: kind === "auth" ? this.state!.expiresAt : this.state!.platformExpiresAt };
+    }
+  }
+  async recover(kind: AppCredential, used: SessionCredential): Promise<boolean> {
+    this.assertEpoch(used.epoch);
+    if (!this.state) return false;
+    if (kind === "auth") {
+      if (used.revision === this.authRevision) await this.refreshAuth(used.epoch);
+    } else if (used.revision === this.platformRevision) await this.token(true);
+    this.assertEpoch(used.epoch);
+    return true;
+  }
 }

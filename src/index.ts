@@ -66,7 +66,7 @@ export type {
 } from "./types.js";
 
 export { defineAppExtension } from "./extensions.js";
-export type { AppExtension, AppExtensionContext, AppScope } from "./extensions.js";
+export type { AppExtension, AppExtensionContext, AppScope, AppCredential } from "./extensions.js";
 export { AppComponentRegistry } from "./components.js";
 export type { AppComponentReference, AppComponentSpec, AppComponentContext } from "./components.js";
 export { checkAppCompatibility, assertAppCompatibility } from "./apps.js";
