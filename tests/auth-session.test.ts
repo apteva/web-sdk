@@ -28,7 +28,7 @@ function fixture() {
     if (path.endsWith("/signup")) return Response.json(session());
     if (path.endsWith("/logout")) { revoked = true; return new Response(null, { status: 204 }); }
     if (path.endsWith("/refresh")) {
-      if (revoked || body.refresh_token !== `refresh-${refreshes}`) return new Response("invalid_grant", { status: 401 });
+      if (revoked || body.refresh_token !== `refresh-${refreshes}`) return Response.json({ error: "invalid_grant" }, { status: 401 });
       refreshes++; await delay(); return Response.json(session());
     }
     if (path.endsWith("/delegated-token")) {

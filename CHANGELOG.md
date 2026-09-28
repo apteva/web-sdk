@@ -1,3 +1,13 @@
+## 0.10.1
+
+- Keep an active managed Auth session after Auth explicitly reports a retryable
+  pre-commit refresh failure. Continue to reject the failed request and retry
+  refresh on a later request.
+- Treat only `401 invalid_grant` as definitive refresh rejection. Retain an
+  uncertain marker for generic 401, timeout and proxy errors so a single-use
+  credential cannot be replayed.
+- Add credential-free `onDiagnostic` refresh outcomes and session-clear reasons.
+
 ## 0.10.0
 
 - Add generic opt-in managed Auth persistence (`auth.persistence: "local"`),

@@ -638,7 +638,10 @@ rejected in app Auth mode. Without `auth` configuration, existing platform
 login and opaque-token APIs retain their original behavior.
 
 A temporary mint failure preserves the normal Auth session and blocks only
-platform-credential requests. Credential types never switch after an error. A rejected Auth refresh clears the session. Local logout clears
+platform-credential requests. Credential types never switch after an error. An
+explicit `refresh_unavailable` response keeps an active session and permits a
+later refresh attempt; an `invalid_grant` response clears it. An uncertain
+refresh outcome cannot safely reuse a single-use credential. Local logout clears
 credentials and streams immediately; a failed network logout still throws so the
 host can report that server-side revocation could not be confirmed. A late
 renewal cannot restore a logged-out session. HTTP writes are never automatically
@@ -695,6 +698,11 @@ const conversations = client.app("conversations", { credential: "platform" });
 `restore()` calls share one promise. Protected requests await pending restoration
 and can start initial restoration themselves. After a restoration error, retry
 explicitly with `restore()` or log in; requests do not repeatedly retry it.
+`onDiagnostic` receives credential-free refresh outcomes (`succeeded`,
+`retryable`, `uncertain`, `invalid`) and session-clear reason codes. It never
+receives tokens, server response text or user details. An already authenticated
+tab stays authenticated after Auth explicitly returns `refresh_unavailable`;
+the failed request rejects, and the next request can try refresh again.
 
 Only the refresh credential, format version, configuration scope and locally
 generated session/revision identifiers are persisted in localStorage. Normal Auth
@@ -736,10 +744,10 @@ Restoration failure handling:
 
 | Result | SDK behavior |
 | --- | --- |
-| Auth rejects an invalid/revoked refresh with 401 | Clear the saved and local session; login is required. |
+| Auth rejects an invalid/revoked refresh with `401 invalid_grant` | Clear the saved and local session; login is required. |
 | Browser is already offline before sending | Preserve the saved credential; retry restoration when connected. |
-| Auth returns `refresh_unavailable` with 503 | Auth confirms rotation did not commit; preserve the credential for explicit retry. |
-| Network failure, generic proxy 5xx, malformed response, or `refresh_uncertain` | Preserve an uncertain marker; do not reuse the old credential. If no replacement was saved, require login. |
+| Auth returns `refresh_unavailable` with 503 | Auth confirms rotation did not commit; preserve an active session and its credential for retry. |
+| Network failure, generic proxy 5xx/401, malformed response, or `refresh_uncertain` | Preserve an uncertain marker; do not reuse the old credential. If no replacement was saved, require login. |
 | Platform mint denied | Restore the Auth session; platform-protected access remains blocked. |
 | Unsupported or malformed storage format | Fail closed; login or logout replaces the record. |
 

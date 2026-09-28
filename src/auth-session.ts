@@ -28,6 +28,10 @@ export interface AuthState {
   persistence: "memory" | "local" | "unavailable";
   error?: { code: string; message: string };
 }
+/** Credential-free lifecycle events suitable for client telemetry. */
+export type AuthDiagnostic =
+  | { type: "refresh"; outcome: "succeeded" | "retryable" | "uncertain" | "invalid" }
+  | { type: "session_clear"; reason: "login" | "logout" | "dispose" | "shared_change" | "invalid_refresh" | "refresh_uncertain" | "storage_error" };
 export interface AppAuthOptions {
   /** Public Auth app OAuth client identifier; never a private client secret. */
   clientId: string;
@@ -41,6 +45,8 @@ export interface AppAuthOptions {
   onStateChange?: (state: AuthState) => void;
   /** Receives user/session metadata, never credentials. */
   onSessionChange?: (session: AuthSessionInfo | undefined) => void;
+  /** Receives fixed outcome and reason codes, never credentials or server text. */
+  onDiagnostic?: (event: AuthDiagnostic) => void;
 }
 interface AuthResponse {
   user: AuthUser;
@@ -56,6 +62,11 @@ interface AuthResponse {
 export interface SessionCredential { token: string; epoch: number; revision: number; deadline: number }
 interface State { response: AuthResponse; expiresAt: number; platformExpiresAt: number }
 const margin = 10_000;
+type RefreshFailure = AptevaError & { safeRefreshRetry?: boolean; invalidRefresh?: boolean };
+const retryableRefresh = (error: unknown): error is RefreshFailure =>
+  error instanceof AptevaError && (error as RefreshFailure).safeRefreshRetry === true;
+const invalidRefresh = (error: unknown): error is RefreshFailure =>
+  error instanceof AptevaError && (error as RefreshFailure).invalidRefresh === true;
 
 /** Internal issuer-specific session lifecycle. AptevaClient is the public API. */
 export class AuthSession {
@@ -92,6 +103,7 @@ export class AuthSession {
     }
   }
   getState(): AuthState { return structuredClone(this.lifecycle); }
+  private diagnostic(event: AuthDiagnostic): void { try { this.options.onDiagnostic?.(event); } catch { /* Observer only. */ } }
   private emitState(): void { try { this.options.onStateChange?.(this.getState()); } catch { /* Observer only. */ } }
   private status(status: AuthState["status"], error?: unknown): void {
     this.lifecycle = { status, persistence: this.lifecycle.persistence, ...(error ? { error: {
@@ -111,9 +123,9 @@ export class AuthSession {
         }
         return;
       }
-      if (this.stored || this.state) { this.clear(); this.stored = undefined; }
+      if (this.stored || this.state) { this.clear("shared_change"); this.stored = undefined; }
       this.status(record && record.state !== "logged-out" ? "idle" : "unauthenticated");
-    } catch (error) { this.clear(); this.status("error", error); }
+    } catch (error) { this.clear("storage_error"); this.status("error", error); }
   }
   private async ready(): Promise<void> {
     if (this.disposed) throw new Error("Auth session disposed");
@@ -149,7 +161,7 @@ export class AuthSession {
       throw error;
     }
   }
-  dispose(): void { this.disposed = true; this.clear(); this.persistence?.dispose(); }
+  dispose(): void { this.disposed = true; this.clear("dispose"); this.persistence?.dispose(); }
   info(): AuthSessionInfo | undefined {
     const s = this.state;
     return s ? structuredClone({ user: s.response.user, authorization: s.response.authorization,
@@ -160,7 +172,8 @@ export class AuthSession {
   private notify(): void {
     try { this.options.onSessionChange?.(this.info()); } catch { /* Observers cannot roll back credential rotation. */ }
   }
-  clear(): void {
+  clear(reason: Extract<AuthDiagnostic, { type: "session_clear" }>["reason"] = "shared_change"): void {
+    const hadSession = Boolean(this.state || (this.stored && this.stored.state !== "logged-out"));
     this.epoch++;
     this.state = undefined;
     this.pending = undefined;
@@ -172,6 +185,7 @@ export class AuthSession {
     this.changed(undefined);
     for (const listener of this.listeners) listener();
     this.notify();
+    if (hadSession) this.diagnostic({ type: "session_clear", reason });
   }
   private assertEpoch(epoch: number): void {
     if (this.epoch !== epoch) throw new AptevaError(401, "Auth session changed");
@@ -194,7 +208,8 @@ export class AuthSession {
         }
         if (code === "refresh_uncertain") throw new PersistenceError("refresh_uncertain", "Refresh outcome is uncertain; login required");
         const error = new AptevaError(response.status, path + " failed");
-        if (code === "refresh_unavailable") Object.assign(error, { safeRefreshRetry: true });
+        if (response.status === 503 && code === "refresh_unavailable") Object.assign(error, { safeRefreshRetry: true });
+        if (response.status === 401 && code === "invalid_grant") Object.assign(error, { invalidRefresh: true });
         throw error;
       }
       return response.status === 204 ? undefined as T : await response.json() as T;
@@ -232,7 +247,7 @@ export class AuthSession {
   }
   private async establish(path: string, input: object): Promise<AuthResponse> {
     if (this.disposed) throw new Error("Auth session disposed");
-    this.clear(); const epoch = this.epoch;
+    this.clear("login"); const epoch = this.epoch;
     const establish = async () => {
       this.assertEpoch(epoch);
       if (this.persistence?.enabled) {
@@ -271,7 +286,7 @@ export class AuthSession {
     if (!generation && this.persistence?.enabled) {
       try { generation = this.persistence.read()?.generation; } catch { /* The locked logout handles invalid/unavailable storage. */ }
     }
-    this.clear();
+    this.clear("logout");
     const logout = async () => {
       let token = refresh;
       if (this.persistence?.enabled) {
@@ -305,22 +320,27 @@ export class AuthSession {
       response = await this.call<AuthResponse>("/refresh", this.input({ refresh_token: record.refreshToken }));
       this.validateResponse(response);
     } catch (error) {
-      if (error instanceof AptevaError && error.status === 401) {
+      if (invalidRefresh(error)) {
         persistence.write(persistence.record("logged-out", record.generation));
-        if (this.epoch === epoch) this.clear();
-      } else if (error instanceof AptevaError && (error as AptevaError & { safeRefreshRetry?: boolean }).safeRefreshRetry) {
+        if (this.epoch === epoch) { this.clear("invalid_refresh"); this.stored = undefined; }
+        this.diagnostic({ type: "refresh", outcome: "invalid" });
+      } else if (retryableRefresh(error)) {
         // Auth explicitly confirms that rotation did not commit.
+        this.stored = record;
         persistence.write(record);
+        this.diagnostic({ type: "refresh", outcome: "retryable" });
       }
-      if (error instanceof AptevaError && (error.status === 401 || (error as AptevaError & { safeRefreshRetry?: boolean }).safeRefreshRetry)) throw error;
+      if (invalidRefresh(error) || retryableRefresh(error)) throw error;
       // Network failures and generic proxy 5xx responses can hide a committed
       // rotation. Keep the marker; never replay that credential automatically.
+      this.diagnostic({ type: "refresh", outcome: "uncertain" });
       throw new PersistenceError("refresh_uncertain", "Refresh outcome is uncertain; login required");
     }
     this.stored = persistence.record("active", record.generation, response.refresh_token);
     try { persistence.write(this.stored); } catch { /* Marker prevents other tabs reusing the old token. Keep the replacement in memory. */ }
     this.assertEpoch(epoch);
     this.accept(response, epoch, Date.now());
+    this.diagnostic({ type: "refresh", outcome: "succeeded" });
   }
   private async refreshAuth(epoch: number): Promise<void> {
     if (this.pendingAuth) return this.pendingAuth;
@@ -334,11 +354,17 @@ export class AuthSession {
         this.assertEpoch(epoch);
         const record = this.persistence!.read();
         if (!record || record.state === "logged-out" || (this.stored && record.generation !== this.stored.generation)) {
-          this.clear(); throw new AptevaError(401, "Auth session changed");
+          this.clear("shared_change"); throw new AptevaError(401, "Auth session changed");
         }
         await this.refreshSaved(record, epoch);
       }); } catch (error) {
-        if (this.epoch === epoch) { this.clear(); this.status("error", error); }
+        if (this.epoch === epoch) {
+          if (retryableRefresh(error) && this.state) this.status("authenticated");
+          else {
+            this.clear(error instanceof PersistenceError && error.code !== "refresh_uncertain" ? "storage_error" : "refresh_uncertain");
+            this.status("error", error);
+          }
+        }
         throw error;
       }
       return;
@@ -348,8 +374,15 @@ export class AuthSession {
     try {
       const response = await this.call<AuthResponse>("/refresh", this.input({ refresh_token: refresh }));
       this.accept(response, epoch, Date.now());
+      this.diagnostic({ type: "refresh", outcome: "succeeded" });
     } catch (error) {
-      if (this.epoch === epoch && error instanceof AptevaError && error.status === 401) this.clear();
+      this.diagnostic({ type: "refresh", outcome: invalidRefresh(error) ? "invalid" : retryableRefresh(error) ? "retryable" : "uncertain" });
+      // A response without an explicit retry guarantee may conceal a committed
+      // rotation. A memory-only client cannot safely reuse that refresh token.
+      if (this.epoch === epoch && !retryableRefresh(error)) {
+        this.clear(invalidRefresh(error) ? "invalid_refresh" : "refresh_uncertain");
+        if (!invalidRefresh(error)) this.status("error", error);
+      }
       throw error;
     }
   }

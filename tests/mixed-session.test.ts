@@ -28,7 +28,7 @@ function fixture() {
     if (path === "/api/apps/auth/logout") { revoked = true; return new Response(null, { status: 204 }); }
     if (path === "/api/apps/auth/refresh") {
       refreshes++;
-      if (revoked) return new Response("revoked", { status: 401 });
+      if (revoked) return Response.json({ error: "invalid_grant" }, { status: 401 });
       expect(JSON.parse(String(init?.body)).refresh_token).toBe(`refresh-${authVersion}`);
       await delay(); authVersion++; platformVersion++;
       return Response.json(session());

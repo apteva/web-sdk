@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { AuthSession, type AppAuthOptions } from "../src/auth-session";
+import { AuthSession, type AppAuthOptions, type AuthDiagnostic } from "../src/auth-session";
 import type { PersistenceEnvironment } from "../src/session-persistence";
 const sessions: AuthSession[] = [];
 afterEach(() => { sessions.splice(0).forEach(s => s.dispose()); });
@@ -12,7 +12,7 @@ function fixture() {
   const records = new Map<string, { family: number; used: boolean; user: number }>();
   const revoked = new Set<number>();
   let tabs = 0, version = 0, family = 0, refreshes = 0, logouts = 0, reuses = 0;
-  let gate: Promise<void> | undefined, mode = "ok", failWrite = false, failRead = false;
+  let gate: Promise<void> | undefined, mode = "ok", authLifetime = 900, failWrite = false, failRead = false;
   const events: unknown[] = [];
   const notify = (id: number, key: string) => { events.push({ key }); queueMicrotask(() => {
     for (const [tab, observer] of observers) if (id !== tab && observer.key === key) observer.fn();
@@ -34,7 +34,7 @@ function fixture() {
   };
   const response = (f: number, user: number) => {
     const refresh = `refresh-${++version}`; records.set(refresh, { family: f, used: false, user });
-    return { user: { id: user }, access_token: `auth-${version}`, refresh_token: refresh, expires_in: 900,
+    return { user: { id: user }, access_token: `auth-${version}`, refresh_token: refresh, expires_in: authLifetime,
       authorization: { roles: [user === 1 ? "user" : "admin"], permissions: [], authorization_version: version },
       ...(mode !== "platform-denied" ? { apteva_access_token: `platform-${version}`, apteva_expires_in: 60, apteva_expires_at: new Date(Date.now() + 60000).toISOString() } : {}) };
   };
@@ -48,6 +48,7 @@ function fixture() {
       if (gate) await gate;
       if (mode === "safe503") return Response.json({ error: "refresh_unavailable" }, { status: 503 });
       if (mode === "proxy503") return new Response("unavailable", { status: 503 });
+      if (mode === "proxy401") return new Response("unauthorized", { status: 401 });
       const record = records.get(body.refresh_token);
       if (!record || revoked.has(record.family)) return Response.json({ error: "invalid_grant" }, { status: 401 });
       if (record.used) { reuses++; revoked.add(record.family); return Response.json({ error: "invalid_grant" }, { status: 401 }); }
@@ -65,7 +66,8 @@ function fixture() {
     sessions.push(session); return session;
   };
   return { data, events, environment, tab, login: (s: AuthSession, email = "alice") => s.login({ email, password: "secret" }),
-    counts: () => ({ refreshes, logouts, reuses }), mode: (m: string) => { mode = m; }, gate: (p: Promise<void>) => { gate = p; },
+    counts: () => ({ refreshes, logouts, reuses }), mode: (m: string) => { mode = m; },
+    authLifetime: (seconds: number) => { authLifetime = seconds; }, gate: (p: Promise<void>) => { gate = p; },
     failWrite: () => { failWrite = true; }, failRead: () => { failRead = true; }, revoke: () => { revoked.add(family); },
   };
 }
@@ -124,9 +126,13 @@ test("logout during restoration prevents late acceptance and revokes the rotated
 });
 
 test("definitive revocation clears the saved session", async () => {
-  const f = fixture(); await f.login(f.tab()); f.revoke(); const b = f.tab();
+  const f = fixture(), diagnostics: AuthDiagnostic[] = [];
+  await f.login(f.tab()); f.revoke(); const b = f.tab({ onDiagnostic: event => diagnostics.push(event) });
   await expect(b.restore()).rejects.toThrow(); expect(b.info()).toBeUndefined();
   expect(JSON.parse([...f.data.values()][0]).state).toBe("logged-out");
+  expect(diagnostics).toContainEqual({ type: "session_clear", reason: "invalid_refresh" });
+  expect(diagnostics).toContainEqual({ type: "refresh", outcome: "invalid" });
+  expect(JSON.stringify(diagnostics)).not.toContain("refresh-");
 });
 
 test("explicit pre-commit failure preserves the refresh for a successful retry", async () => {
@@ -136,7 +142,26 @@ test("explicit pre-commit failure preserves the refresh for a successful retry",
   f.mode("ok"); expect((await b.restore())?.user.id).toBe(1); expect(f.counts().reuses).toBe(0);
 });
 
-for (const mode of ["lost", "proxy503"]) test(`${mode} leaves an uncertain marker and never replays the saved refresh`, async () => {
+test("an active tab stays authenticated after an explicit pre-commit failure", async () => {
+  const f = fixture(), changes: Array<number | undefined> = [], diagnostics: AuthDiagnostic[] = [];
+  f.authLifetime(1);
+  const a = f.tab({ onSessionChange: session => changes.push(session?.user.id), onDiagnostic: event => diagnostics.push(event) });
+  await f.login(a);
+  const before = changes.slice();
+  f.mode("safe503");
+  await expect(a.credential("auth")).rejects.toThrow("503");
+  expect(a.info()?.user.id).toBe(1);
+  expect(a.getState().status).toBe("authenticated");
+  expect(changes).toEqual(before);
+  expect(diagnostics.at(-1)).toEqual({ type: "refresh", outcome: "retryable" });
+  expect(JSON.parse([...f.data.values()][0]).state).toBe("active");
+  f.authLifetime(900); f.mode("ok");
+  expect((await a.credential("auth")).token).toStartWith("auth-");
+  expect(diagnostics.at(-1)).toEqual({ type: "refresh", outcome: "succeeded" });
+  expect(f.counts().reuses).toBe(0);
+});
+
+for (const mode of ["lost", "proxy503", "proxy401"]) test(`${mode} leaves an uncertain marker and never replays the saved refresh`, async () => {
   const f = fixture(); await f.login(f.tab()); f.mode(mode); const b = f.tab();
   await expect(b.restore()).rejects.toThrow(); const count = f.counts().refreshes;
   f.mode("ok"); await expect(f.tab().restore()).rejects.toThrow("Previous refresh");
