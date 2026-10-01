@@ -128,6 +128,11 @@ export class AptevaClient {
     }
   }
 
+  private authRecoveryPending(): boolean {
+    const reason = this.appAuth?.getState().reason;
+    return reason === "refresh_retryable" || reason === "refresh_uncertain" || reason === "storage_error";
+  }
+
   private async renewAfterUnauthorized(revision: number, credential: AppCredential = "platform", used?: SessionCredential): Promise<boolean> {
     try {
       if (this.appAuth) return used ? await this.appAuth.recover(credential, used) : false;
@@ -817,7 +822,8 @@ export class AptevaClient {
               const renewed = !renewedSinceOpen && await this.renewAfterUnauthorized(revision, credential, used);
               renewedSinceOpen = renewed;
               if (closed) break;
-              if (!this.appAuth || !renewed) this.onUnauthorized?.();
+              if ((!this.appAuth || !renewed) && !this.authRecoveryPending()) this.onUnauthorized?.();
+              if (!renewed && this.authRecoveryPending()) throw new AptevaError(0, "SSE waiting for Auth recovery");
               reportError(new AptevaError(401, "SSE connection failed (401)"));
               if (!renewed) { close(); break; }
               continue;
@@ -888,7 +894,7 @@ export class AptevaClient {
         } catch (error) {
           if (closed) break;
           reportError(error);
-          if (this.appAuth && error instanceof AptevaError && (error.status === 401 || error.status === 403)) close();
+          if (this.appAuth && !this.authRecoveryPending() && error instanceof AptevaError && (error.status === 401 || error.status === 403)) close();
         } finally {
           if (expiryTimer) clearTimeout(expiryTimer);
           if (reader) {
@@ -998,7 +1004,7 @@ export class AptevaClient {
         const text = await readBody(res);
         // Renew for subsequent calls, but never replay an HTTP operation.
         const renewed = !new Headers(init?.headers).has("Authorization") && await this.renewAfterUnauthorized(revision, credential, used);
-        if (!this.appAuth || !renewed) this.onUnauthorized?.();
+        if ((!this.appAuth || !renewed) && !this.authRecoveryPending()) this.onUnauthorized?.();
         throw new AptevaError(401, text || "unauthorized");
       }
       if (!res.ok) {

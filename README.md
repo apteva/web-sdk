@@ -640,15 +640,17 @@ login and opaque-token APIs retain their original behavior.
 A temporary mint failure preserves the normal Auth session and blocks only
 platform-credential requests. Credential types never switch after an error. An
 explicit `refresh_unavailable` response keeps an active session and permits a
-later refresh attempt; an `invalid_grant` response clears it. An uncertain
-refresh outcome cannot safely reuse a single-use credential. Local logout clears
+later refresh attempt; `401 invalid_grant` clears it. An uncertain refresh
+outcome retains identity and requires login before acquiring fresh credentials.
+The SDK never reuses a refresh token whose rotation may have committed. Local logout clears
 credentials and streams immediately; a failed network logout still throws so the
 host can report that server-side revocation could not be confirmed. A late
 renewal cannot restore a logged-out session. HTTP writes are never automatically
 replayed after a 401; successful renewal prepares subsequent calls. Unlike legacy
 transport mode, a successfully recovered 401 does not trigger the
 `onUnauthorized` callback in managed Auth mode, although the original call still
-rejects. Reconcile a write's outcome before retrying it.
+rejects. Retryable or uncertain refresh failures also suppress this callback;
+use `onStateChange` to present recovery. Reconcile a write's outcome before retrying it.
 
 
 ### Mixed-app integration check
@@ -693,16 +695,45 @@ const conversations = client.app("conversations", { credential: "platform" });
 
 `auth.getState()` reports `status` (`idle`, `restoring`, `authenticated`,
 `unauthenticated`, or `error`), effective `persistence` (`memory`, `local`, or
-`unavailable`) and optional credential-free error metadata. Render loading for
-`idle`/`restoring`, rather than briefly displaying the login screen. Concurrent
-`restore()` calls share one promise. Protected requests await pending restoration
-and can start initial restoration themselves. After a restoration error, retry
-explicitly with `restore()` or log in; requests do not repeatedly retry it.
-`onDiagnostic` receives credential-free refresh outcomes (`succeeded`,
-`retryable`, `uncertain`, `invalid`) and session-clear reason codes. It never
-receives tokens, server response text or user details. An already authenticated
-tab stays authenticated after Auth explicitly returns `refresh_unavailable`;
-the failed request rejects, and the next request can try refresh again.
+`unavailable`), and optional credential-free `reason`, `recovery` and error
+metadata. These fields work in memory mode too. Render loading for
+`idle`/`restoring`. **`authenticated` means identity is retained; check `reason`
+and `recovery` before treating the session as fully operational.**
+
+| `reason` | `recovery` | Meaning |
+| --- | --- | --- |
+| absent | absent | Normal session or no pending recovery. |
+| `refresh_retryable` | `retry` | Offline before sending, or Auth explicitly guaranteed rotation did not commit. Retry with `auth.restore()` or a later request. |
+| `refresh_uncertain` | `login` | Timeout, lost/malformed response, generic HTTP failure, or unresolved refresh marker. Identity remains; fresh credentials are blocked. |
+| `storage_error` | `login` | Shared credentials cannot be read/coordinated safely. Identity remains; fresh credentials are blocked. |
+| `invalid_session` | `login` | Auth definitively rejected the session; credentials and identity are cleared. |
+| `revoked` | `login` | Auth explicitly reported `401 session_revoked`; credentials and identity are cleared. |
+| `logout` | absent | Explicit local or shared logout. |
+| `session_changed` | absent | Account replacement, disposal, or shared session removal. |
+
+Current Auth returns `invalid_grant` for both invalid and revoked sessions, so
+those responses produce `invalid_session`. The SDK reports `revoked` only when
+Auth supplies the explicit signal; it does not infer revocation from a generic 401.
+
+Concurrent `restore()` calls share one promise. Protected requests wait for
+pending restoration/refresh. Already-valid access credentials can remain usable
+until expiry; fresh platform mints and refresh-token reuse are blocked during
+uncertainty. A same-origin tab that safely saves a newer active revision can
+unblock recovery. Unknown rotation is never automatically replayed. Transparent
+recovery after an uncertain commit requires an Auth protocol enhancement.
+
+`onDiagnostic` receives fixed refresh outcomes (`succeeded`, `retryable`,
+`uncertain`, `invalid`, `revoked`, `blocked`), triggers (`offline`, `timeout`,
+`http`, `network`, `persistence`, `unresolved_marker`), optional HTTP status, and
+session-clear reasons. It never receives tokens, URLs, server text or identity.
+An uncertain refresh does not emit `session_clear` or close all session-bound
+streams. Streams report errors and wait for recovery; genuine logout/login,
+invalid session and revocation close the old session's streams.
+
+The SDK manages authentication state. The consuming app decides whether to pause
+an active call, show a retry/login action, or end it. Preserve the call ID in app
+state before a genuine re-login, then reconcile and resume using the app's API.
+Publishing this SDK does not update an app's bundled dependency or call UI.
 
 Only the refresh credential, format version, configuration scope and locally
 generated session/revision identifiers are persisted in localStorage. Normal Auth
@@ -745,9 +776,9 @@ Restoration failure handling:
 | Result | SDK behavior |
 | --- | --- |
 | Auth rejects an invalid/revoked refresh with `401 invalid_grant` | Clear the saved and local session; login is required. |
-| Browser is already offline before sending | Preserve the saved credential; retry restoration when connected. |
+| Browser is already offline before sending | Retain identity and the saved credential; report `refresh_retryable` and retry when connected. |
 | Auth returns `refresh_unavailable` with 503 | Auth confirms rotation did not commit; preserve an active session and its credential for retry. |
-| Network failure, generic proxy 5xx/401, malformed response, or `refresh_uncertain` | Preserve an uncertain marker; do not reuse the old credential. If no replacement was saved, require login. |
+| Network failure, generic proxy 5xx/401, malformed response, or `refresh_uncertain` | Retain identity and an uncertain marker; block fresh credentials, report `refresh_uncertain`, and require login if no replacement was saved. |
 | Platform mint denied | Restore the Auth session; platform-protected access remains blocked. |
 | Unsupported or malformed storage format | Fail closed; login or logout replaces the record. |
 

@@ -1,3 +1,22 @@
+## 0.11.0 — 2026-10-01
+
+- Retain session identity during offline, retryable and uncertain refresh failures
+  in both memory and local persistence modes. Never replay an uncertain rotation.
+- Add public `AuthState.reason` and `recovery` fields to distinguish temporary
+  uncertainty, confirmed invalid sessions, explicit logout and explicit revocation.
+  Block fresh credentials during uncertainty; retain already-valid access tokens.
+- Add sanitized diagnostic triggers for offline, timeout, HTTP, network,
+  persistence and unresolved refresh markers, with optional HTTP status.
+- Process refresh failures under Web Locks; prevent older attempts overwriting
+  a newer login, and recover when a sibling saves a newer valid revision.
+- Suppress `onUnauthorized` during refresh recovery. Keep subscriptions available
+  for retry instead of closing them merely because refresh is uncertain.
+- Add failure, timeout, concurrent-tab and recovery regression coverage including
+  real Chromium, localStorage and native Web Locks.
+- Apps own active-call behavior and call-ID recovery after re-login. Existing
+  Auth retry-safe errors require v0.12.1; no Auth/Telephony release is part of this
+  SDK fix. Explicit revocation state requires an explicit Auth response signal.
+
 ## 0.10.1
 
 - Keep an active managed Auth session after Auth explicitly reports a retryable

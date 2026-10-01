@@ -156,3 +156,47 @@ test("managed streams renew on expiry and close on logout", async () => {
     await delay(30); expect(streams).toBe(count); expect(cancelled).toBeGreaterThanOrEqual(2);
   } finally { stream.close(); }
 });
+
+for (const mode of ["safe503", "proxy401", "lost"] as const) test(`${mode}: managed HTTP and streams signal recovery without calling onUnauthorized`, async () => {
+  let refreshes = 0, requests = 0, unauthorized = 0, errors = 0;
+  let failure: string = mode;
+  const payload = () => ({ user: { id: 1 }, access_token: `auth-${refreshes}`, refresh_token: `refresh-${refreshes}`, expires_in: 900 });
+  const client = new AptevaClient({ baseURL: "https://test.example", projectId: "p", auth: { clientId: "c" },
+    onUnauthorized: () => unauthorized++, fetch: (async (input) => {
+      const path = new URL(String(input)).pathname;
+      if (path.endsWith("/login")) return Response.json(payload());
+      if (path.endsWith("/refresh")) {
+        refreshes++;
+        if (failure === "safe503") return Response.json({ error: "refresh_unavailable" }, { status: 503 });
+        if (failure === "proxy401") return new Response("private server detail", { status: 401 });
+        if (failure === "lost") throw Error("lost");
+        return Response.json(payload());
+      }
+      requests++;
+      if (failure) return new Response("denied", { status: 401 });
+      return new Response('data: {"ok":true}\n\n', { headers: { "Content-Type": "text/event-stream" } });
+    }) as typeof fetch });
+  await client.auth.login({ email: "alice", password: "test" });
+  const app = client.app("api", { credential: "auth" });
+  await expect(app.post("/write", {})).rejects.toThrow("401");
+  expect(unauthorized).toBe(0); expect(client.auth.getSession()?.user.id).toBe(1);
+  expect(client.auth.getState()?.reason).toBe(mode === "safe503" ? "refresh_retryable" : "refresh_uncertain");
+  let events = 0;
+  const stream = app.subscribe("/events", () => events++, { reconnectDelayMs: 5, onError: () => errors++ });
+  try {
+    while (!errors) await delay();
+    expect(unauthorized).toBe(0); expect(client.auth.getSession()?.user.id).toBe(1);
+    if (mode !== "safe503") expect(refreshes).toBe(1);
+    failure = "";
+    // Retry-safe refresh can recover the same stream. Uncertain refresh requires
+    // login, which closes old session subscriptions; the app creates new ones.
+    if (mode === "safe503") {
+      for (let i = 0; i < 100 && !events; i++) await delay();
+      expect(events).toBeGreaterThan(0);
+    } else {
+      await client.auth.login({ email: "alice", password: "test" });
+      expect(client.auth.getState()?.reason).toBeUndefined();
+    }
+    expect(requests).toBeGreaterThanOrEqual(2);
+  } finally { stream.close(); client.auth.dispose(); }
+});

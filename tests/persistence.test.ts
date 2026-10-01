@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { AuthSession, type AppAuthOptions, type AuthDiagnostic } from "../src/auth-session";
 import type { PersistenceEnvironment } from "../src/session-persistence";
 const sessions: AuthSession[] = [];
@@ -46,8 +46,13 @@ function fixture() {
     if (path.endsWith("/refresh")) {
       refreshes++;
       if (gate) await gate;
+      if (mode === "timeout") return await new Promise<Response>((_, reject) => init!.signal!.addEventListener("abort", () => reject(Error("aborted")), { once: true }));
       if (mode === "safe503") return Response.json({ error: "refresh_unavailable" }, { status: 503 });
       if (mode === "proxy503") return new Response("unavailable", { status: 503 });
+      if (mode === "revoked") return Response.json({ error: "session_revoked" }, { status: 401 });
+      if (mode === "invalid-write-failure") { failWrite = true; return Response.json({ error: "invalid_grant" }, { status: 401 }); }
+      if (mode === "invalid") return Response.json({ error: "invalid_grant" }, { status: 401 });
+      if (mode === "malformed") return Response.json({ access_token: "sensitive" });
       if (mode === "proxy401") return new Response("unauthorized", { status: 401 });
       const record = records.get(body.refresh_token);
       if (!record || revoked.has(record.family)) return Response.json({ error: "invalid_grant" }, { status: 401 });
@@ -131,7 +136,7 @@ test("definitive revocation clears the saved session", async () => {
   await expect(b.restore()).rejects.toThrow(); expect(b.info()).toBeUndefined();
   expect(JSON.parse([...f.data.values()][0]).state).toBe("logged-out");
   expect(diagnostics).toContainEqual({ type: "session_clear", reason: "invalid_refresh" });
-  expect(diagnostics).toContainEqual({ type: "refresh", outcome: "invalid" });
+  expect(diagnostics).toContainEqual({ type: "refresh", outcome: "invalid", trigger: "http", httpStatus: 401 });
   expect(JSON.stringify(diagnostics)).not.toContain("refresh-");
 });
 
@@ -153,7 +158,7 @@ test("an active tab stays authenticated after an explicit pre-commit failure", a
   expect(a.info()?.user.id).toBe(1);
   expect(a.getState().status).toBe("authenticated");
   expect(changes).toEqual(before);
-  expect(diagnostics.at(-1)).toEqual({ type: "refresh", outcome: "retryable" });
+  expect(diagnostics.at(-1)).toEqual({ type: "refresh", outcome: "retryable", trigger: "http", httpStatus: 503 });
   expect(JSON.parse([...f.data.values()][0]).state).toBe("active");
   f.authLifetime(900); f.mode("ok");
   expect((await a.credential("auth")).token).toStartWith("auth-");
@@ -210,8 +215,11 @@ test("unsupported or tampered storage fails closed without network requests", as
 });
 
 test("storage loss during an established shared session never rotates a stale private copy", async () => {
-  const f = fixture(), a = f.tab(); await f.login(a); f.failRead();
-  await expect(a.credential("auth")).rejects.toThrow(); expect(a.info()).toBeUndefined();
+  const f = fixture(), diagnostics: AuthDiagnostic[] = [], a = f.tab({ onDiagnostic: e => diagnostics.push(e) });
+  f.authLifetime(1); await f.login(a); f.failRead();
+  await expect(a.credential("auth")).rejects.toThrow(); expect(a.info()?.user.id).toBe(1);
+  expect(a.getState()).toMatchObject({ reason: "storage_error", recovery: "login" });
+  expect(diagnostics.at(-1)).toEqual({ type: "refresh", outcome: "blocked", trigger: "persistence" });
   expect(a.getState().persistence).toBe("unavailable"); expect(f.counts().refreshes).toBe(0);
   await f.login(a); expect(a.info()?.user.id).toBe(1);
 });
@@ -231,4 +239,120 @@ test("Web Lock rejection reports unavailable and a fresh login falls back withou
 test("explicit memory mode never reads or writes browser storage", async () => {
   const f = fixture(); f.failRead(); f.failWrite(); const a = f.tab({ persistence: "memory" });
   await f.login(a); expect(a.getState().persistence).toBe("memory"); expect(a.info()?.user.id).toBe(1);
+});
+
+
+for (const persistence of ["local", "memory"] as const) {
+  test(`${persistence}: offline before sending retains identity and permits recovery`, async () => {
+    const f = fixture(), diagnostics: AuthDiagnostic[] = [], a = f.tab({ persistence, onDiagnostic: e => diagnostics.push(e) });
+    f.authLifetime(1); await f.login(a); let clears = 0; a.onClear(() => clears++);
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+    Object.defineProperty(globalThis, "navigator", { configurable: true, value: { onLine: false } });
+    try {
+      await expect(a.credential("auth")).rejects.toThrow("offline");
+      expect(a.info()?.user.id).toBe(1); expect(clears).toBe(0); expect(f.counts().refreshes).toBe(0);
+      expect(a.getState()).toMatchObject({ status: "authenticated", reason: "refresh_retryable", recovery: "retry" });
+      expect(diagnostics.at(-1)).toEqual({ type: "refresh", outcome: "retryable", trigger: "offline" });
+      if (persistence === "local") expect(JSON.parse([...f.data.values()][0]).state).toBe("active");
+    } finally {
+      if (descriptor) Object.defineProperty(globalThis, "navigator", descriptor); else Reflect.deleteProperty(globalThis, "navigator");
+    }
+    f.authLifetime(900);
+    expect((await a.restore())?.user.id).toBe(1);
+    expect(a.getState().reason).toBeUndefined(); expect(f.counts().refreshes).toBe(1);
+  });
+
+  for (const mode of ["lost", "proxy503", "proxy401", "malformed"]) test(`${persistence}: ${mode} suspends fresh acquisition without clearing identity`, async () => {
+    const f = fixture(), diagnostics: AuthDiagnostic[] = [], a = f.tab({ persistence, onDiagnostic: e => diagnostics.push(e) });
+    f.authLifetime(1); await f.login(a); let clears = 0; a.onClear(() => clears++); f.mode(mode);
+    await expect(a.credential("auth")).rejects.toThrow();
+    expect(a.info()?.user.id).toBe(1); expect(clears).toBe(0);
+    expect(a.getState()).toMatchObject({ status: "authenticated", reason: "refresh_uncertain", recovery: "login" });
+    expect(diagnostics.at(-1)).toMatchObject({ type: "refresh", outcome: "uncertain", trigger: mode === "lost" ? "network" : "http" });
+    // Existing unexpired credentials remain usable; forcing a fresh mint is blocked.
+    expect((await a.credential("platform")).token).toStartWith("platform-");
+    await expect(a.token(true)).rejects.toThrow();
+    f.mode("ok"); await expect(a.credential("auth")).rejects.toThrow(); await expect(a.restore()).rejects.toThrow();
+    expect(f.counts()).toMatchObject({ refreshes: 1, reuses: 0 });
+    expect(JSON.stringify(diagnostics)).not.toContain("sensitive"); expect(JSON.stringify(diagnostics)).not.toContain("refresh-");
+    f.authLifetime(900); await f.login(a, "bob"); expect(a.info()?.user.id).toBe(2);
+    expect((await a.credential("auth")).token).toStartWith("auth-"); expect(a.getState().reason).toBeUndefined();
+  });
+
+  test(`${persistence}: actual refresh abort reports timeout and never retries rotation`, async () => {
+    const f = fixture(), diagnostics: AuthDiagnostic[] = [], a = f.tab({ persistence, onDiagnostic: e => diagnostics.push(e) });
+    f.authLifetime(1); await f.login(a); f.mode("timeout");
+    const original = globalThis.setTimeout;
+    const timer = spyOn(globalThis, "setTimeout").mockImplementation(((fn: TimerHandler, ms?: number, ...args: unknown[]) => original(fn, ms === 15000 ? 5 : ms, ...args)) as typeof setTimeout);
+    try { await expect(a.credential("auth")).rejects.toThrow(); } finally { timer.mockRestore(); }
+    expect(diagnostics.at(-1)).toEqual({ type: "refresh", outcome: "uncertain", trigger: "timeout" });
+    expect(a.info()?.user.id).toBe(1); f.mode("ok"); await expect(a.credential("auth")).rejects.toThrow();
+    expect(f.counts().refreshes).toBe(1);
+  });
+
+  for (const mode of ["invalid", "revoked"]) test(`${persistence}: ${mode} is a distinct terminal state`, async () => {
+    const f = fixture(), a = f.tab({ persistence }); f.authLifetime(1); await f.login(a);
+    const sibling = persistence === "local" ? f.tab() : undefined;
+    if (sibling) await sibling.restore();
+    f.mode(mode); await expect(a.credential("auth")).rejects.toThrow(); await tick();
+    const reason = mode === "invalid" ? "invalid_session" : "revoked";
+    expect(a.info()).toBeUndefined(); expect(a.getState()).toMatchObject({ status: "unauthenticated", reason, recovery: "login" });
+    if (sibling) {
+      expect(sibling.info()).toBeUndefined(); expect(sibling.getState().reason).toBe(reason);
+      const reload = f.tab(); expect(await reload.restore()).toBeUndefined(); expect(reload.getState().reason).toBe(reason);
+    }
+    await f.login(a); await a.logout(); expect(a.getState().reason).toBe("logout");
+  });
+}
+
+test("unresolved refresh marker identifies recovery cause without sending a request", async () => {
+  const f = fixture(), a = f.tab(); await f.login(a); const [key, raw] = [...f.data][0];
+  f.data.set(key, JSON.stringify({ ...JSON.parse(raw), state: "refreshing" }));
+  const diagnostics: AuthDiagnostic[] = [], b = f.tab({ onDiagnostic: e => diagnostics.push(e) });
+  await expect(b.restore()).rejects.toThrow();
+  expect(diagnostics.at(-1)).toEqual({ type: "refresh", outcome: "uncertain", trigger: "unresolved_marker" });
+  expect(b.getState()).toMatchObject({ reason: "refresh_uncertain", recovery: "login" }); expect(f.counts().refreshes).toBe(0);
+});
+
+for (const persistence of ["local", "memory"] as const) test(`${persistence}: an older failed refresh cannot overwrite a newer login`, async () => {
+  const f = fixture(), a = f.tab({ persistence }); f.authLifetime(1); await f.login(a);
+  let release!: () => void; f.gate(new Promise(resolve => { release = resolve; })); f.mode("safe503");
+  const failure = a.credential("auth").catch(() => {}); await tick();
+  f.authLifetime(900); const login = f.login(a, "bob"); release(); await Promise.all([failure, login]);
+  expect(a.info()?.user.id).toBe(2); expect(a.getState().reason).toBeUndefined();
+});
+
+test("queued sibling login wins over a failed shared refresh", async () => {
+  const f = fixture(), a = f.tab(); f.authLifetime(1); await f.login(a); const b = f.tab();
+  let release!: () => void; f.gate(new Promise(resolve => { release = resolve; })); f.mode("proxy503");
+  const failure = a.credential("auth").catch(() => {}); await tick();
+  f.authLifetime(900); const login = f.login(b, "bob"); release(); await Promise.all([failure, login]); await tick();
+  expect(b.info()?.user.id).toBe(2); expect(b.getState().reason).toBeUndefined();
+  f.mode("ok"); expect((await a.restore())?.user.id).toBe(2); expect(f.counts().reuses).toBe(0);
+});
+
+test("a newer active revision lets a tab recover from an unresolved marker", async () => {
+  const f = fixture(), a = f.tab(); await f.login(a); const [key, raw] = [...f.data][0];
+  const active = JSON.parse(raw); f.data.set(key, JSON.stringify({ ...active, state: "refreshing" }));
+  const b = f.tab(); await expect(b.restore()).rejects.toThrow();
+  // Auth confirmed no rotation committed and a sibling saved an active revision.
+  f.data.set(key, JSON.stringify({ ...active, revision: crypto.randomUUID() }));
+  expect((await b.restore())?.user.id).toBe(1); expect(b.getState().reason).toBeUndefined(); expect(f.counts().reuses).toBe(0);
+});
+
+
+test("definitive rejection clears local identity even if its tombstone cannot be saved", async () => {
+  const f = fixture(), a = f.tab(); f.authLifetime(1); await f.login(a); f.mode("invalid-write-failure");
+  await expect(a.credential("auth")).rejects.toThrow("401");
+  expect(a.info()).toBeUndefined(); expect(a.getState()).toMatchObject({ reason: "invalid_session", persistence: "unavailable" });
+  expect(JSON.parse([...f.data.values()][0]).state).toBe("refreshing"); expect(f.counts().reuses).toBe(0);
+});
+
+test("failure saving the refresh marker blocks sending and preserves identity", async () => {
+  const f = fixture(), diagnostics: AuthDiagnostic[] = [], a = f.tab({ onDiagnostic: e => diagnostics.push(e) });
+  f.authLifetime(1); await f.login(a); f.failWrite();
+  await expect(a.credential("auth")).rejects.toThrow();
+  expect(a.info()?.user.id).toBe(1); expect(f.counts().refreshes).toBe(0);
+  expect(a.getState()).toMatchObject({ reason: "storage_error", recovery: "login" });
+  expect(diagnostics.at(-1)).toEqual({ type: "refresh", outcome: "blocked", trigger: "persistence" });
 });

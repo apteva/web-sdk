@@ -6,12 +6,13 @@ import { join, resolve } from "node:path";
 const temp = await mkdtemp(join(tmpdir(), "apteva-browser-sessions-"));
 const source = join(temp, "browser.ts");
 await writeFile(source, `import { AptevaClient } from ${JSON.stringify(resolve(import.meta.dir, "../src/index.ts"))};
-window.start = (persistence = "local") => { window.client?.auth.dispose(); window.client = new AptevaClient({ baseURL: location.origin, projectId: "project", auth: { clientId: "public", persistence } }); };
-window.start();`);
+window.start = (persistence = "local") => { window.client?.auth.dispose(); window.client = new AptevaClient({ baseURL: location.origin, projectId: "project", auth: { clientId: "public", persistence, onDiagnostic: event => window.diagnostics.push(event) }, onUnauthorized: () => window.unauthorized++ }); };
+window.diagnostics = []; window.unauthorized = 0; window.start();`);
 const bundle = await Bun.build({ entrypoints: [source], target: "browser" });
 if (!bundle.success) throw new Error(String(bundle.logs));
 const js = await bundle.outputs[0].text();
 let revision = 0, family = 0, refreshes = 0, reuse = 0, writes = 0, closedStreams = 0;
+let authLifetime = 900;
 let mode = "ok", barrier: Promise<void> | undefined;
 const credentials = new Map<string, { family: number; user: number; used: boolean }>();
 const access = new Map<string, { family: number; user: number; kind: "auth" | "platform" }>();
@@ -21,7 +22,7 @@ function issue(family: number, user: number) {
   credentials.set(refresh, { family, user, used: false });
   access.set(`auth-${id}`, { family, user, kind: "auth" }); access.set(`platform-${id}`, { family, user, kind: "platform" });
   return { user: { id: user }, authorization: { roles: ["user"], permissions: [], authorization_version: id },
-    access_token: `auth-${id}`, refresh_token: refresh, expires_in: 900, apteva_access_token: `platform-${id}`,
+    access_token: `auth-${id}`, refresh_token: refresh, expires_in: authLifetime, apteva_access_token: `platform-${id}`,
     apteva_expires_in: 60, apteva_expires_at: new Date(Date.now() + 60000).toISOString() };
 }
 const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
@@ -35,6 +36,11 @@ const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) 
     if (path.endsWith("/refresh")) {
       refreshes++; if (barrier) await barrier;
       if (mode === "safe503") return Response.json({ error: "refresh_unavailable" }, { status: 503 });
+      if (mode === "invalid") return Response.json({ error: "invalid_grant" }, { status: 401 });
+      if (mode === "timeout") {
+        await new Promise<void>(resolve => request.signal.addEventListener("abort", () => resolve(), { once: true }));
+        return new Response("aborted", { status: 502 });
+      }
       const r = credentials.get(body.refresh_token);
       if (!r || revoked.has(r.family)) return Response.json({ error: "invalid_grant" }, { status: 401 });
       if (r.used) { reuse++; revoked.add(r.family); return Response.json({ error: "invalid_grant" }, { status: 401 }); }
@@ -89,6 +95,34 @@ try {
   await login(reopened); mode = "safe503";
   await expect(restore(b)).rejects.toThrow(); expect((await state(b)).status).toBe("error");
   mode = "ok"; await restore(b);
+  // Established session: offline, retryable 503, timeout and definitive 401.
+  authLifetime = 1; await login(b);
+  const authRead = () => b.evaluate(() => (window as any).client.app("api", { credential: "auth" }).get("/crm"));
+  await b.evaluate(() => Object.defineProperty(navigator, "onLine", { configurable: true, value: false }));
+  const beforeOffline = refreshes; await expect(authRead()).rejects.toThrow();
+  expect(refreshes).toBe(beforeOffline); expect((await state(b)).reason).toBe("refresh_retryable");
+  expect(await b.evaluate(() => (window as any).client.auth.getSession().user.id)).toBe(1);
+  await b.evaluate(() => delete (navigator as any).onLine);
+  mode = "safe503"; await expect(authRead()).rejects.toThrow();
+  expect((await state(b)).recovery).toBe("retry");
+  mode = "ok"; authLifetime = 900; await restore(b); expect((await state(b)).reason).toBeUndefined();
+  // A failed refresh holds the lock until its state is recorded; a queued login wins.
+  authLifetime = 1; await login(b); mode = "safe503";
+  let failRelease!: () => void; barrier = new Promise(resolve => { failRelease = resolve; });
+  const beforeFailure = refreshes; const failing = authRead().catch(() => undefined);
+  await expect.poll(() => refreshes).toBeGreaterThan(beforeFailure);
+  authLifetime = 900; const newerLogin = login(c, "bob"); failRelease();
+  await Promise.all([failing, newerLogin]); barrier = undefined; mode = "ok";
+  expect(await c.evaluate(() => (window as any).client.auth.getSession().user.id)).toBe(2);
+  await restore(b); expect(await b.evaluate(() => (window as any).client.auth.getSession().user.id)).toBe(2);
+  authLifetime = 1; await login(b); mode = "timeout";
+  await expect(authRead()).rejects.toThrow(); expect((await state(b)).reason).toBe("refresh_uncertain");
+  expect(await b.evaluate(() => (window as any).client.auth.getSession().user.id)).toBe(1);
+  expect(await b.evaluate(() => (window as any).diagnostics.at(-1))).toEqual({ type: "refresh", outcome: "uncertain", trigger: "timeout" });
+  const afterTimeout = refreshes; mode = "ok"; await expect(authRead()).rejects.toThrow(); expect(refreshes).toBe(afterTimeout);
+  await login(b); mode = "invalid"; await expect(authRead()).rejects.toThrow();
+  expect((await state(b)).reason).toBe("invalid_session"); expect(await b.evaluate(() => (window as any).client.auth.getSession())).toBeUndefined();
+  mode = "ok"; authLifetime = 900; await login(reopened);
   // Account switch while restore is waiting on a rotating response.
   let release!: () => void; barrier = new Promise(resolve => { release = resolve; });
   const before = refreshes; const restoring = restore(c).catch(() => undefined);
@@ -107,5 +141,5 @@ try {
   const unsupported = await isolated.newPage(); await unsupported.goto(server.url.origin); await unsupported.waitForFunction(() => Boolean((window as any).client));
   expect((await state(unsupported)).persistence).toBe("unavailable"); await login(unsupported);
   expect(await unsupported.evaluate(() => localStorage.length)).toBe(0); await isolated.close();
-  console.log("Browser persistence passed: reload, real cross-tab locks, mixed handles, streams, logout, account switching, outages, no replay and unavailable locks.");
+  console.log("Browser persistence passed: reload, real cross-tab locks, mixed handles, streams, logout, account switching, offline, retryable 503, timeout, definitive 401, concurrent failures, no replay and unavailable locks.");
 } finally { await browser.close(); server.stop(true); await rm(temp, { recursive: true, force: true }); }

@@ -6,6 +6,7 @@ export interface StoredSession {
   revision: string;
   state: "active" | "refreshing" | "logged-out";
   refreshToken?: string;
+  reason?: "logout" | "invalid_session" | "revoked" | "session_changed";
 }
 export interface PersistenceEnvironment {
   storage: Storage;
@@ -95,6 +96,7 @@ export class SessionPersistence {
       const record = JSON.parse(raw) as StoredSession;
       if (record.version !== 1 || record.scope !== this.scope || !/^[a-f0-9-]{36}$/.test(record.generation) || !/^[a-f0-9-]{36}$/.test(record.revision) ||
         !["active", "refreshing", "logged-out"].includes(record.state) ||
+        (record.reason !== undefined && (record.state !== "logged-out" || !["logout", "invalid_session", "revoked", "session_changed"].includes(record.reason))) ||
         (record.state === "logged-out" ? record.refreshToken !== undefined : typeof record.refreshToken !== "string" || record.refreshToken.length < 1 || record.refreshToken.length > 16384)) throw new Error();
       return record;
     } catch { throw new PersistenceError("invalid_storage", "Saved session is invalid; login required"); }
@@ -107,7 +109,7 @@ export class SessionPersistence {
       this.environment.publish(this.key);
     } catch { this.disable(); throw new PersistenceError("persistence_unavailable", "Session could not be saved"); }
   }
-  record(state: StoredSession["state"], generation: string = crypto.randomUUID(), refreshToken?: string): StoredSession {
-    return { version: 1, scope: this.scope, generation, revision: crypto.randomUUID(), state, ...(refreshToken ? { refreshToken } : {}) };
+  record(state: StoredSession["state"], generation: string = crypto.randomUUID(), refreshToken?: string, reason?: StoredSession["reason"]): StoredSession {
+    return { version: 1, scope: this.scope, generation, revision: crypto.randomUUID(), state, ...(refreshToken ? { refreshToken } : {}), ...(reason ? { reason } : {}) };
   }
 }
