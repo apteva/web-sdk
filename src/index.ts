@@ -1,4 +1,5 @@
 export { AptevaClient, unwrapMCP } from "./client.js";
+export type { NotificationChannels, NotificationPreviewPreferences, NotificationSubscription, NotificationDefinition, NotificationSource, UserNotification, NotificationSnapshot } from "./notifications.js";
 export type { AppHandle } from "./client.js";
 export { AptevaError } from "./errors.js";
 export {
