@@ -1,4 +1,5 @@
 import { AuthSession } from "./auth-session.js";
+import type { NotificationChannels, NotificationPreviewPreferences, NotificationSubscription, NotificationSource, UserNotification, NotificationSnapshot } from "./notifications.js";
 import type { AuthLoginInput, AuthSignupInput, SessionCredential } from "./auth-session.js";
 import { loadAppFrontend, type LoadAppOptions, type LoadedAppFrontend } from "./frontend.js";
 import { AptevaError } from "./errors.js";
@@ -51,6 +52,29 @@ import type {
 const DEFAULT_TIMEOUT_MS = 30_000;
 
 export class AptevaClient {
+  /** Personal notification API; authorization always comes from the user session. */
+  readonly notifications = {
+    preferences: () => this.request<NotificationChannels>("GET","/api/notifications/preferences",undefined),
+    setPreferences: (value:NotificationChannels) => this.request<NotificationChannels>("PUT","/api/notifications/preferences",value),
+    previews: () => this.request<NotificationPreviewPreferences>("GET","/api/notifications/previews",undefined),
+    setPreviews: (value:NotificationPreviewPreferences) => this.request<NotificationPreviewPreferences>("PUT","/api/notifications/previews",value),
+    sources: (projectId=this.projectId||"",installId?:number) => {
+      const query=new URLSearchParams({project_id:projectId});if(installId!==undefined)query.set("install_id",String(installId));
+      return this.request<NotificationSource[]>("GET",`/api/notifications/sources?${query}`,undefined);
+    },
+    list: (before?:number) => this.request<NotificationSnapshot>("GET",`/api/notifications${before?`?before=${before}`:""}`,undefined),
+    get: (id:number) => this.request<UserNotification>("GET",`/api/notifications/${id}`,undefined),
+    subscribe: (value:NotificationSubscription) => this.request<NotificationSubscription>("PUT","/api/notifications/subscriptions",value),
+    unsubscribe: (value:NotificationSubscription) => this.request<NotificationSubscription>("PUT","/api/notifications/subscriptions",{...value,channels:{in_app:false,tab:false,desktop:false,mobile:false}}),
+    reset: (value:NotificationSubscription) => this.request<{ok:boolean}>("DELETE","/api/notifications/subscriptions",value),
+    markRead: (id:number,read=true) => this.request<{ok:boolean}>("PATCH",`/api/notifications/${id}`,{read}),
+    dismiss: (id:number) => this.request<{ok:boolean}>("PATCH",`/api/notifications/${id}`,{dismiss:true}),
+    stream: (onSnapshot:(snapshot:NotificationSnapshot)=>void,options?:SubscribeOptions) => this.subscribe<NotificationSnapshot>("/api/notifications/stream",undefined,onSnapshot,options),
+    settingsURL: (installId?:number) => {
+      const query=new URLSearchParams({tab:"notifications"});if(this.projectId)query.set("project_id",this.projectId);if(installId!==undefined)query.set("install_id",String(installId));
+      return `${this.baseURL}/settings?${query}`;
+    },
+  };
   private readonly baseURL: string;
   private apiKey?: string;
   private readonly appAuth?: AuthSession;
