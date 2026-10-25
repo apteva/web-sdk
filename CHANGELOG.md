@@ -1,3 +1,11 @@
+## 0.12.1
+
+- Add explicit `client.apps.endpoints(installId)` discovery for direct media and
+  protocol integrations, without changing HTTP/MCP/SSE gateway routing.
+- Export the typed deployment endpoint response. Validate installation IDs.
+- Document the proxy/direct media boundary and generic managed dashboard policy.
+- Add gateway-routing, authentication, project scope and live SSE regressions.
+
 ## 0.11.0 — 2026-10-01
 
 - Retain session identity during offline, retryable and uncertain refresh failures

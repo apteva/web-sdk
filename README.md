@@ -795,3 +795,18 @@ tested SDK API. HTTP writes are never replayed automatically after a 401.
 Validate native browser behavior with `bunx playwright install chromium` followed
 by `bun run test:persistence:browser`. These checks use isolated local fixtures,
 real tabs, Web Locks and localStorage; they do not contact customer accounts.
+
+### Remote app deployments
+
+`client.app(name, { installId, projectId })` uses the Apteva gateway for HTTP,
+MCP and SSE, whether the app runs locally or on a remote backend. Keep dashboard
+reads, actions and notifications on this handle: the server resolves the active
+execution and enforces access. A remote domain is not a reason to change the
+handle's base URL or copy platform credentials to that domain.
+
+For a protocol that intentionally connects directly (for example live media),
+`await client.apps.endpoints(installId)` explicitly discovers the active
+execution's endpoints. Discovery does not change ordinary request routing.
+Use that protocol's scoped credentials; endpoint discovery alone is not an
+authorization grant. Apteva manages its own dashboard's allowed connection
+origins from active managed deployments. External UIs still own their CSP.

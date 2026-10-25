@@ -609,6 +609,12 @@ export class AptevaClient {
   }
 
   readonly apps = {
+    /** Explicit discovery for direct media/stream integrations. Ordinary app
+     * requests and subscriptions always retain their authenticated proxy URL. */
+    endpoints: (installId: number, init?: RequestInit): Promise<AppDeploymentEndpoints> => {
+      if (!Number.isSafeInteger(installId) || installId <= 0) throw new AptevaError(0, "installId must be a positive safe integer");
+      return this.get<AppDeploymentEndpoints>(`/api/apps/installs/${installId}/deployment/endpoints`, init);
+    },
     /** Load an installed app’s bundled client and optional React UI. */
     load: <TClient = unknown, TComponent = unknown>(name: string, options: LoadAppOptions): Promise<LoadedAppFrontend<TClient, TComponent>> =>
       loadAppFrontend<TClient, TComponent>(this.app(name, options), options),
@@ -1083,6 +1089,18 @@ export function unwrapMCP<R>(env: MCPCallResponse<unknown>): R {
   }
 }
 
+/** Discovery does not change an AppHandle's routing or authorize direct use.
+ * Direct consumers must obtain a scoped credential for their own protocol. */
+export interface AppDeploymentEndpoints {
+  install_id: number;
+  deployment_generation: number;
+  proxy_base: string;
+  browser_api_base?: string;
+  endpoints?: Record<string, string>;
+}
+
+/** HTTP, MCP and SSE use Apteva's installation/project-scoped proxy for both
+ * local and remote deployments. Endpoint discovery never redirects this handle. */
 export interface AppHandle<TDefault = unknown> {
   readonly name: string;
   readonly projectId?: string;
